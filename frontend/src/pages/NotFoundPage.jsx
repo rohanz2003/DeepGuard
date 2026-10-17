@@ -1,0 +1,1 @@
+export default function NotFoundPage() { return <section className="planned-page"><p className="eyebrow">Page not found</p><h1>That workspace view does not exist.</h1><p>Use the navigation to return to Overview or Scan history.</p></section>; }

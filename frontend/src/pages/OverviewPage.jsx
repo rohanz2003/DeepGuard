@@ -1,0 +1,29 @@
+import { useEffect, useState } from "react";
+import Icon from "../components/Icon";
+import UploadPanel from "../components/UploadPanel";
+import HistoryTable from "../components/HistoryTable";
+import ResultCard from "../components/ResultCard";
+import ScanResultsChart from "../components/ScanResultsChart";
+import { formatDate, todayLabel } from "../utils/format";
+import { apiService } from "../services/api";
+
+export default function OverviewPage({ data, loading, selectedId, selectedScan, onSelect, onDelete, onUploaded, navigate, readOnly = false }) {
+  const stats = data.stats || { total_scans: 0, suspicious_results: 0, analyzed_results: 0, inconclusive_results: 0 };
+  const [model, setModel] = useState({ status: "unavailable", version: "not-configured" });
+  useEffect(() => {
+    if (readOnly) return undefined;
+    let active = true;
+    apiService.health().then(({ data: response }) => {
+      if (active && response.model) setModel(response.model);
+    }).catch(() => {
+      if (active) setModel({ status: "unavailable", version: "not-configured" });
+    });
+    return () => { active = false; };
+  }, [readOnly]);
+  const modelReady = model.status === "ready";
+  return <><section className="page-heading"><div><p className="eyebrow">{todayLabel()}</p><h1>Good to see you.</h1><p className="page-subtitle">Review your latest voice-risk signals and keep uncertainty visible.</p></div><div className="model-pill"><span className={`status-dot ${modelReady ? "success" : "neutral"}`} /> <span>{modelReady ? `Model ready · ${model.version}` : "Model not connected"}</span></div></section><div className="metric-grid"><MetricCard label="Total scans" value={stats.total_scans} detail={stats.total_scans ? "Stored records" : "Ready for your first review"} icon="waveform" tone="blue" /><MetricCard label="Suspicious results" value={stats.suspicious_results} detail="Requires human review" icon="alert" tone="amber" /><MetricCard label="Inconclusive" value={stats.inconclusive_results} detail={modelReady ? "No score generated" : "Model unavailable"} icon="info" tone="slate" /><MetricCard label="Audio retained" value="0" detail="Memory-only processing" icon="lock" tone="green" /></div><ScanResultsChart stats={stats} /><div className="content-grid"><UploadPanel onUploaded={onUploaded} readOnly={readOnly} /><ReadinessCard navigate={navigate} readOnly={readOnly} model={model} /></div><section className="section-heading"><div><p className="eyebrow">Review queue</p><h2>Latest scans</h2></div>{data.scans.length > 0 && <button className="text-button" onClick={() => navigate("/history")}>View all <Icon name="arrow" size={15} /></button>}</section>{selectedId ? <ResultCard scanId={selectedId} initialScan={selectedScan} onDelete={onDelete} onClose={() => onSelect(null)} /> : data.scans.length === 0 ? <EmptyState onAction={() => navigate(readOnly ? "/login" : "/#upload")} readOnly={readOnly} modelReady={modelReady} /> : <HistoryTable scans={data.scans.slice(0, 4)} loading={loading} onSelect={onSelect} onDelete={onDelete} />}</>;
+}
+
+function MetricCard({ label, value, detail, icon, tone }) { return <article className="metric-card"><div className={`metric-icon ${tone}`}><Icon name={icon} size={18} /></div><div className="metric-copy"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></article>; }
+function ReadinessCard({ navigate, readOnly, model }) { const ready = model?.status === "ready"; return <article className="card readiness-card"><div className="readiness-glow" /><div className="card-heading"><div><p className="eyebrow">System readiness</p><h2>Know what is live</h2></div><span className={`status-badge ${ready ? "success" : "neutral"}`}><span className={`status-dot ${ready ? "success" : "neutral"}`} /> {ready ? "Ready" : "Limited"}</span></div><div className="readiness-list"><div><span className="readiness-status complete"><Icon name="check" size={13} /></span><span><strong>Secure upload validation</strong><small>{readOnly ? "Available after sign-in" : "Signature and size checks"}</small></span></div><div><span className="readiness-status complete"><Icon name="check" size={13} /></span><span><strong>Private scan history</strong><small>Metadata only, 30-day retention</small></span></div><div><span className={`readiness-status ${ready ? "complete" : "pending"}`}><Icon name={ready ? "check" : "info"} size={13} /></span><span><strong>Deepfake inference model</strong><small>{ready ? `Research baseline ${model.version}` : "Not configured in this workspace"}</small></span></div><div><span className="readiness-status pending"><Icon name="info" size={13} /></span><span><strong>Telephony monitoring</strong><small>Unavailable; no browser call capture</small></span></div></div><button className="text-button" onClick={() => navigate("/settings")}>View privacy settings <Icon name="arrow" size={15} /></button></article>; }
+function EmptyState({ onAction, readOnly, modelReady }) { return <div className="empty-state"><div className="empty-graphic"><Icon name="waveform" size={28} /></div><h3>{readOnly ? "Preview has no scan records" : "Your review queue is clear"}</h3><p>{readOnly ? "This read-only preview contains no account data or sample scans." : modelReady ? "Upload a consented WAV recording to run the configured research baseline. Its output remains a probabilistic indicator." : "Upload a WAV recording to begin. The workspace stores metadata, but will not claim a risk score until a trained model is connected."}</p><button className="button secondary" onClick={onAction}>{readOnly ? "Sign in to upload" : "Upload first recording"} <Icon name={readOnly ? "arrow" : "upload"} size={16} /></button></div>; }

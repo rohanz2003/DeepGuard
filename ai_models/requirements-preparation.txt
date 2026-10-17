@@ -1,0 +1,2 @@
+# Optional local FFmpeg binary fallback; preparation otherwise uses system FFmpeg.
+imageio-ffmpeg==0.6.0

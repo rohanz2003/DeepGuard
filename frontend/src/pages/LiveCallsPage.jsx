@@ -1,0 +1,2 @@
+import Icon from "../components/Icon";
+export default function LiveCallsPage() { return <section className="planned-page"><div className="planned-icon"><Icon name="radio" size={28} /></div><p className="eyebrow">Unavailable capability</p><h1>Live call monitoring</h1><p>This workspace does not capture ordinary cellular calls in the browser. Authorized telephony streaming, consent, and legal review are required before this surface can be enabled.</p><span className="status-badge neutral"><span className="status-dot neutral" /> Not configured</span></section>; }

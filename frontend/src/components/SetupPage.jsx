@@ -1,0 +1,7 @@
+import { useNavigate } from "react-router-dom";
+import Icon from "./Icon";
+
+export default function SetupPage() {
+  const navigate = useNavigate();
+  return <main className="auth-shell setup-shell"><section className="auth-visual"><div className="brand-mark large"><Icon name="shield" size={22} /></div><p className="eyebrow light">One-time setup</p><h1>Connect a private<br /><em>identity layer.</em></h1><p className="auth-lede">DeepGuard uses Firebase Authentication for identity and Firestore-compatible scan ownership. No account data is placed in browser storage.</p></section><section className="auth-panel"><div className="auth-card"><p className="eyebrow">Firebase required</p><h2>Finish local configuration</h2><p className="auth-copy">Create <code>frontend/.env</code> with these exact values, then restart Vite:</p><pre className="setup-code">{`VITE_FIREBASE_API_KEY=your-web-api-key\nVITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com\nVITE_FIREBASE_PROJECT_ID=your-project-id\nVITE_FIREBASE_APP_ID=your-web-app-id`}</pre><p className="auth-copy">Enable Email/Password in Firebase Authentication. The API remains unavailable until Firebase is configured and the backend verifies your session.</p><div className="setup-actions"><button className="button secondary" onClick={() => navigate("/preview")}>Open read-only Preview workspace</button><button className="link-button" onClick={() => window.location.reload()}>I configured it — reload</button></div></div></section></main>;
+}
