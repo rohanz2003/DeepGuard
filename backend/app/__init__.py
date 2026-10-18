@@ -8,10 +8,11 @@ from werkzeug.exceptions import HTTPException
 from .config import Config
 from .firebase import FirebaseServices
 from .inference import ModelInferenceService
-from .jobs import ScanJobManager
+from .jobs import DurableScanQueue, ScanJobManager
 from .rate_limit import RateLimiter
 from .request import InMemoryRequest
 from .routes import api
+from .storage import FirebaseObjectStorage
 
 
 def create_app(test_config=None):
@@ -40,27 +41,76 @@ def create_app(test_config=None):
             return injected
         return app.extensions["firebase"].repository
 
+    def storage_provider():
+        injected = app.config.get("SCAN_STORAGE")
+        if injected is None:
+            injected = app.config.get("RAW_AUDIO_STORAGE")
+        if injected is None:
+            injected = app.config.get("SCAN_OBJECT_STORAGE")
+        if injected is not None:
+            return injected
+        return app.extensions["firebase_storage"]
+
+    app.extensions["firebase_storage"] = FirebaseObjectStorage(
+        app.extensions["firebase"],
+        app.config.get("FIREBASE_STORAGE_BUCKET", ""),
+    )
+
     injected_manager = app.config.get("SCAN_JOB_MANAGER")
     if injected_manager is None:
         injected_manager = app.config.get("JOB_MANAGER")
+    if injected_manager is None:
+        injected_manager = app.config.get("SCAN_QUEUE")
     injected_executor = app.config.get("SCAN_JOB_EXECUTOR")
     if injected_executor is None:
         injected_executor = app.config.get("JOB_EXECUTOR")
-    app.extensions["scan_jobs"] = (
-        injected_manager
-        if injected_manager is not None
-        else ScanJobManager(
-            repository_provider,
-            app.extensions["inference"],
-            executor=injected_executor,
-            max_workers=app.config["SCAN_MAX_WORKERS"],
-            max_queue=app.config["SCAN_MAX_QUEUE"],
-            max_attempts=app.config["SCAN_MAX_ATTEMPTS"],
+    if injected_manager is not None:
+        scan_jobs = injected_manager
+    else:
+        # Existing unit tests inject a repository and use the legacy manager
+        # to exercise the old bounded handoff.  Any explicit storage boundary
+        # (or a non-test deployment) selects the durable production path.
+        explicit_storage = any(
+            app.config.get(key) is not None
+            for key in ("SCAN_STORAGE", "RAW_AUDIO_STORAGE", "SCAN_OBJECT_STORAGE")
         )
-    )
+        legacy_injected = bool(
+            not explicit_storage
+            and (
+                injected_executor is not None
+                or (
+                    app.config.get("TESTING")
+                    and app.config.get("SCAN_REPOSITORY") is not None
+                    and not app.config.get("SCAN_DURABLE_QUEUE")
+                )
+            )
+        )
+        if legacy_injected:
+            scan_jobs = ScanJobManager(
+                repository_provider,
+                app.extensions["inference"],
+                executor=injected_executor,
+                max_workers=app.config["SCAN_MAX_WORKERS"],
+                max_queue=app.config["SCAN_MAX_QUEUE"],
+                max_attempts=app.config["SCAN_MAX_ATTEMPTS"],
+            )
+        else:
+            scan_jobs = DurableScanQueue(
+                repository_provider,
+                storage_provider,
+                raw_retention_seconds=app.config["SCAN_RAW_RETENTION_SECONDS"],
+                max_attempts=app.config["SCAN_MAX_ATTEMPTS"],
+            )
+    app.extensions["scan_jobs"] = scan_jobs
     # Keep a descriptive alias for integrations that refer to the boundary as
     # a job manager rather than a scan extension.
     app.extensions["job_manager"] = app.extensions["scan_jobs"]
+    if isinstance(scan_jobs, DurableScanQueue):
+        app.extensions["scan_worker"] = scan_jobs.create_worker(
+            app.extensions["inference"],
+            lease_seconds=app.config["SCAN_LEASE_SECONDS"],
+            poll_interval_seconds=app.config["SCAN_POLL_INTERVAL_SECONDS"],
+        )
     app.extensions["rate_limiter"] = RateLimiter()
     CORS(
         app,

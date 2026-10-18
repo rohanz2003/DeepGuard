@@ -10,6 +10,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 from .auth import token_required
 from .firebase import FirebaseUnavailable, utc_now
 from .jobs import JobQueueFull
+from .storage import StorageUnavailable
 from .transcript import (
     TranscriptValidationError,
     analyze_transcript,
@@ -58,10 +59,10 @@ def error(message: str, status: int = 400):
 
 def storage_error(exception: Exception):
     current_app.logger.warning(
-        "Firestore operation failed (%s)", type(exception).__name__
+        "Scan storage operation failed (%s)", type(exception).__name__
     )
     return error(
-        "Firestore storage is unavailable. Enable Cloud Firestore for this Firebase project, then try again.",
+        "Firestore storage is unavailable. Enable Cloud Firestore and temporary Cloud Storage for this Firebase project, then try again.",
         503,
     )
 
@@ -103,7 +104,7 @@ def _pending_inference() -> dict:
         "confidence": None,
         "model_version": current_app.config.get("MODEL_VERSION", "not-configured"),
         "explanation": (
-            "The upload was validated and queued for bounded in-process voice analysis."
+            "The upload was validated and queued for durable voice analysis."
         ),
     }
 
@@ -295,19 +296,23 @@ def create_scan():
             job_manager, "max_attempts", current_app.config["SCAN_MAX_ATTEMPTS"]
         ),
     )
+    stored = None
     try:
-        stored = repository().create(g.current_user["id"], scan)
-    except FirebaseUnavailable as exc:
-        return storage_error(exc)
-    except Exception as exc:
-        return storage_error(exc)
-    try:
-        enqueue = getattr(job_manager, "enqueue", None) or getattr(
-            job_manager, "submit"
-        )
-        if not callable(enqueue):
-            raise RuntimeError("The scan job manager is not configured.")
-        enqueue(g.current_user["id"], scan["id"], metadata)
+        # The durable queue uploads the validated bytes to private temporary
+        # Storage and writes queue metadata in Firestore.  It intentionally
+        # does not run inference in the API process.  The legacy branch keeps
+        # injected in-process test adapters and their existing contract.
+        admit = getattr(job_manager, "admit", None)
+        if callable(admit):
+            stored = admit(g.current_user["id"], scan, metadata)
+        else:
+            stored = repository().create(g.current_user["id"], scan)
+            enqueue = getattr(job_manager, "enqueue", None) or getattr(
+                job_manager, "submit"
+            )
+            if not callable(enqueue):
+                raise RuntimeError("The scan job manager is not configured.")
+            enqueue(g.current_user["id"], scan["id"], metadata)
     except JobQueueFull:
         # Do not leave an accepted-looking pending record when the bounded
         # worker boundary cannot accept its audio handoff.
@@ -318,10 +323,18 @@ def create_scan():
                 "Could not remove rejected scan (%s)", type(exc).__name__
             )
         return error("Scan processing is busy. Please try again shortly.", 503)
+    except (FirebaseUnavailable, StorageUnavailable) as exc:
+        return storage_error(exc)
     except Exception as exc:
+        # Durable admission cleans an uploaded object if the Firestore write
+        # fails.  Legacy adapters retain their existing safe failure record.
+        if callable(getattr(job_manager, "admit", None)):
+            return storage_error(exc)
         current_app.logger.warning(
             "Could not enqueue scan worker (%s)", type(exc).__name__
         )
+        if stored is None:
+            return storage_error(exc)
         failure_updates = {
             "status": "failed",
             "deepfake_status": "inconclusive",
@@ -372,7 +385,11 @@ def get_scan(scan_id):
 @token_required
 def delete_scan(scan_id):
     try:
-        deleted = repository().delete(g.current_user["id"], scan_id)
+        durable_delete = getattr(current_app.extensions["scan_jobs"], "delete", None)
+        if callable(durable_delete):
+            deleted = durable_delete(g.current_user["id"], scan_id)
+        else:
+            deleted = repository().delete(g.current_user["id"], scan_id)
     except FirebaseUnavailable as exc:
         return storage_error(exc)
     except Exception as exc:

@@ -13,6 +13,7 @@ RUN python -m pip install --no-cache-dir -r /app/backend/requirements.txt
 
 COPY backend/app /app/backend/app
 COPY backend/run.py /app/backend/run.py
+COPY backend/worker.py /app/backend/worker.py
 COPY backend/gunicorn.conf.py /app/backend/gunicorn.conf.py
 # The optional JSON model loader imports this package when MODEL_ARTIFACT_PATH
 # is configured. The artifact itself is supplied separately at runtime.

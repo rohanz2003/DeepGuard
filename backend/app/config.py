@@ -24,7 +24,12 @@ class Config:
         if environment in {"prod", "production"} and use_emulators:
             raise ValueError("Firebase emulators cannot be enabled in production.")
         if environment in {"prod", "production"} and any(
-            os.getenv(key) for key in ("FIREBASE_AUTH_EMULATOR_HOST", "FIRESTORE_EMULATOR_HOST")
+            os.getenv(key)
+            for key in (
+                "FIREBASE_AUTH_EMULATOR_HOST",
+                "FIRESTORE_EMULATOR_HOST",
+                "STORAGE_EMULATOR_HOST",
+            )
         ):
             raise ValueError("Emulator host variables must be unset in production.")
 
@@ -45,6 +50,12 @@ class Config:
         return {
             "ENVIRONMENT": environment,
             "FIREBASE_PROJECT_ID": os.getenv("FIREBASE_PROJECT_ID", "").strip(),
+            # Firebase Admin uses this as the default bucket when configured.
+            # Keep the alias for deployments that already name it STORAGE_BUCKET.
+            "FIREBASE_STORAGE_BUCKET": os.getenv(
+                "FIREBASE_STORAGE_BUCKET",
+                os.getenv("SCAN_STORAGE_BUCKET", os.getenv("STORAGE_BUCKET", "")),
+            ).strip(),
             "GOOGLE_APPLICATION_CREDENTIALS": os.getenv(
                 "GOOGLE_APPLICATION_CREDENTIALS", ""
             ).strip(),
@@ -55,6 +66,7 @@ class Config:
             "FIRESTORE_EMULATOR_HOST": os.getenv(
                 "FIRESTORE_EMULATOR_HOST", ""
             ).strip(),
+            "STORAGE_EMULATOR_HOST": os.getenv("STORAGE_EMULATOR_HOST", "").strip(),
             "MAX_UPLOAD_BYTES": max_upload,
             "MAX_REQUEST_BYTES": max_request,
             "MIN_DURATION_SECONDS": float(os.getenv("MIN_DURATION_SECONDS", "1")),
@@ -77,12 +89,37 @@ class Config:
             "UPLOAD_RATE_LIMIT_PER_MINUTE": int(
                 os.getenv("UPLOAD_RATE_LIMIT_PER_MINUTE", "10")
             ),
-            # Scan processing is deliberately bounded and process-local.  A
-            # worker process restart drops queued jobs, so this is not a
-            # durable queue configuration.
+            # Legacy in-process settings remain available for injected test
+            # adapters.  Production uses the durable Firestore queue below.
             "SCAN_MAX_WORKERS": int(os.getenv("SCAN_MAX_WORKERS", "2")),
             "SCAN_MAX_QUEUE": int(os.getenv("SCAN_MAX_QUEUE", "8")),
             "SCAN_MAX_ATTEMPTS": int(os.getenv("SCAN_MAX_ATTEMPTS", "2")),
+            "SCAN_RAW_RETENTION_SECONDS": int(
+                os.getenv(
+                    "SCAN_RAW_RETENTION_SECONDS",
+                    os.getenv(
+                        "RAW_AUDIO_RETENTION_SECONDS",
+                        os.getenv("SCAN_OBJECT_RETENTION_SECONDS", "3600"),
+                    ),
+                )
+            ),
+            "SCAN_LEASE_SECONDS": int(
+                os.getenv(
+                    "SCAN_LEASE_SECONDS",
+                    os.getenv(
+                        "SCAN_LEASE_DURATION_SECONDS",
+                        os.getenv("SCAN_LEASE_DURATION", "300"),
+                    ),
+                )
+            ),
+            "SCAN_POLL_INTERVAL_SECONDS": float(
+                os.getenv(
+                    "SCAN_POLL_INTERVAL_SECONDS", os.getenv("SCAN_POLL_INTERVAL", "5")
+                )
+            ),
+            "SCAN_WORKER_COMMAND": os.getenv(
+                "SCAN_WORKER_COMMAND", "python -m worker"
+            ).strip(),
         }
 
     @staticmethod
@@ -93,8 +130,15 @@ class Config:
             settings["USE_FIREBASE_EMULATORS"]
             or settings["FIREBASE_AUTH_EMULATOR_HOST"]
             or settings["FIRESTORE_EMULATOR_HOST"]
+            or settings.get("STORAGE_EMULATOR_HOST")
         ):
             raise ValueError("Firebase emulators cannot be enabled in production.")
+        if settings["ENVIRONMENT"] in {"production", "prod"} and not settings.get(
+            "FIREBASE_STORAGE_BUCKET"
+        ):
+            raise ValueError(
+                "FIREBASE_STORAGE_BUCKET must be configured in production."
+            )
         if not 0 < settings["MAX_UPLOAD_BYTES"] <= 25 * 1024 * 1024:
             raise ValueError("MAX_UPLOAD_BYTES must be at most 25 MiB.")
         if not 0 < settings["MAX_REQUEST_BYTES"] <= 27 * 1024 * 1024:
@@ -117,3 +161,14 @@ class Config:
             raise ValueError("SCAN_MAX_QUEUE must be between 0 and 1000.")
         if not 1 <= settings["SCAN_MAX_ATTEMPTS"] <= 5:
             raise ValueError("SCAN_MAX_ATTEMPTS must be between 1 and 5.")
+        raw_retention = settings.get("SCAN_RAW_RETENTION_SECONDS", 3600)
+        lease_seconds = settings.get("SCAN_LEASE_SECONDS", 300)
+        poll_interval = settings.get("SCAN_POLL_INTERVAL_SECONDS", 5)
+        if not 1 <= raw_retention <= 7 * 24 * 60 * 60:
+            raise ValueError("SCAN_RAW_RETENTION_SECONDS must be within 1 second and 7 days.")
+        if not 1 <= lease_seconds <= 24 * 60 * 60:
+            raise ValueError("SCAN_LEASE_SECONDS must be within 1 second and 24 hours.")
+        if not 0.1 <= poll_interval <= 3600:
+            raise ValueError("SCAN_POLL_INTERVAL_SECONDS must be between 0.1 and 3600 seconds.")
+        if not settings.get("SCAN_WORKER_COMMAND"):
+            raise ValueError("SCAN_WORKER_COMMAND must not be empty.")

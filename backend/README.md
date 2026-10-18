@@ -12,22 +12,26 @@ Copy `.env.example` to `.env`. Firebase Authentication ID tokens are issued
 and refreshed by the frontend Firebase SDK; this API only verifies those
 tokens. Set `GOOGLE_APPLICATION_CREDENTIALS` to an external service-account
 JSON path for deployed Firebase, or set `USE_FIREBASE_EMULATORS=true` together
-with both emulator hosts for local emulators. Emulator mode is rejected when
-`ENVIRONMENT=production`.
+with the Authentication, Firestore, and (when exercising the queue locally)
+Storage emulator hosts. Emulator mode is rejected when `ENVIRONMENT=production`.
 
-Before using scan history, create a **Cloud Firestore database** in the same
-Firebase project and ensure the Google Cloud **Cloud Firestore API** is enabled.
-The API health check performs a read-only Firestore probe and reports
-`storage: "ready"` only after this succeeds. A disabled API or missing
-database produces HTTP 503 for scan routes rather than silently losing data.
+Before using scans, create a **Cloud Firestore database** and a **Cloud Storage
+bucket** in the same Firebase project, and ensure the Google Cloud
+**Cloud Firestore API** and **Cloud Storage API** are enabled. Set
+`FIREBASE_STORAGE_BUCKET` to that bucket. The API health check performs a
+read-only Firestore probe; a missing database or unavailable bucket produces
+HTTP 503 for scan admission rather than silently losing data.
 
-The API stores only user-scoped scan metadata in Firestore under
-`users/{firebase_uid}/scans/{scan_id}`. Raw audio is read into bounded memory
-for synchronous PCM/WAV validation and is handed to the bounded worker only;
-it is never stored or logged. `expires_at` is written
-for a 30-day default retention period and expired documents are removed when
-read. A separate Firestore TTL policy should be configured operationally for
-eventual cleanup.
+The API stores only owner-scoped scan metadata and durable job state in
+Firestore under `users/{firebase_uid}/scans/{scan_id}`. After synchronous
+PCM/WAV validation, raw audio is uploaded to a private temporary Cloud Storage
+object with a cleanup marker and `SCAN_RAW_RETENTION_SECONDS` expiry. The
+separate worker downloads it only while processing, deletes it after terminal
+success/failure, and can retry cleanup from the marker. Raw audio and raw
+transcript text are never stored in Firestore, returned, or logged.
+`expires_at` is written for a 30-day default metadata retention period and
+expired documents are removed when read. Configure a Firestore TTL policy for
+eventual metadata cleanup as described in deployment documentation.
 
 ## Optional model configuration
 
@@ -64,19 +68,21 @@ separate from `deepfake_status` and `confidence`; the API never combines the two
 When no transcript is supplied, scam status is `unavailable`.
 
 `POST /api/scans` returns HTTP `202` with a top-level `status: "pending"` after
-synchronous WAV/transcript validation and metadata admission. The record then
-transitions through `pending` → `processing` → `completed` or `failed`.
+synchronous WAV/transcript validation, private-object upload, and Firestore
+metadata/job admission. The record then transitions through `pending` →
+`processing` → `completed` or `failed`.
 `updated_at`, `attempt`, `retry_count`, and `max_attempts` are safe lifecycle
 fields; failed records expose only a bounded `error_code` and safe
 `error_explanation`. A dedicated transient inference exception may retry up to
 `SCAN_MAX_ATTEMPTS`; validation and consent errors never enter the worker.
 
-The worker is a bounded in-process `ThreadPoolExecutor` with configurable
-worker count and queue capacity. It prevents duplicate processing for a scan
-within one process and releases raw audio after the worker finishes. This is
-not a durable cross-process queue: queued work is lost on process exit and
-each Gunicorn process has its own manager. Use a durable queue before relying
-on this lifecycle across restarts or multiple processes.
+Run `python worker.py` from `backend/` (or the root `Procfile` worker command)
+as a separate long-lived process. It claims pending Firestore records with a
+transactional lease, recovers `processing` records whose lease expired, and
+guards terminal updates with the lease token so duplicate workers cannot
+finish the same claim. Only `TransientInferenceError` is retryable; ordinary
+inference/storage errors fail safely. The worker command can be configured via
+`SCAN_WORKER_COMMAND`, and the API process never runs inference inline.
 
 The limiter is intentionally process-local and bounded. Deployments with more
 than one worker or instance must also enforce limits at a shared gateway.
