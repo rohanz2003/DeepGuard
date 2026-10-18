@@ -8,6 +8,15 @@ const MAX_TRANSCRIPT_CHARS = 12000;
 const TRANSCRIPT_LENGTH_ERROR = `Transcript must be ${MAX_TRANSCRIPT_CHARS} characters or fewer.`;
 const TRANSCRIPT_CONSENT_ERROR = "Confirm that you have consent to analyze this transcript for scam-language signals.";
 
+function uploadStatusMessage(status) {
+  if (status === "pending") return "Recording queued for analysis. This result will update automatically.";
+  if (status === "processing") return "Recording is processing. This result will update automatically.";
+  if (status === "failed") return "Recording analysis failed. Open the result for details.";
+  if (status === "unavailable") return "Recording validated, but analysis is unavailable for this scan.";
+  if (status === "completed") return "Research analysis completed. Review the separate voice and scam-language signals.";
+  return "Recording submitted. We are checking its analysis status.";
+}
+
 export default function UploadPanel({ onUploaded, readOnly = false }) {
   const inputRef = useRef(null);
   const [dragging, setDragging] = useState(false);
@@ -53,7 +62,7 @@ export default function UploadPanel({ onUploaded, readOnly = false }) {
       setTranscript("");
       setTranscriptConsent(false);
       if (inputRef.current) inputRef.current.value = "";
-      setState({ loading: false, error: "", message: data.scan?.status === "completed" ? "Research analysis completed. Review the separate voice and scam-language signals." : "Recording validated. No model score is available for this scan." });
+      setState({ loading: false, error: "", message: uploadStatusMessage(data.scan?.status) });
       onUploaded(data.scan);
     } catch (error) {
       setState({ loading: false, error: apiErrorMessage(error, "The upload could not be validated."), message: "" });

@@ -73,6 +73,8 @@ Implemented in `frontend/`:
   combined.
 - Upload results are merged into local history state and protected from stale
   list responses during refresh.
+- In-flight scans show queued/processing states, poll detail read-back, stop on
+  terminal states, and render safe failed-job explanations.
 - UI refuses to display invalid confidence values as real scores.
 - Dynamic model readiness from `/api/health`.
 - Research-only caveats in result explanations.
@@ -90,6 +92,7 @@ Important frontend paths:
 - `frontend/src/services/api.js`
 - `frontend/src/styles.css`
 - `frontend/src/App.test.jsx`
+- `frontend/src/components/ResultCard.test.jsx`
 
 The web upload contract remains **uncompressed PCM WAV only**, 1 second to 5
 minutes, maximum 25 MiB. Offline MP3 preparation does not enable MP3 uploads in
@@ -112,7 +115,10 @@ Implemented in `backend/app/`:
   payloads or diagnostic logs.
 - 30-day scan metadata expiry field and expiry-on-read behavior.
 - Safe JSON model artifact loader with strict feature-contract validation.
-- Optional synchronous baseline inference for small local research uploads.
+- Bounded in-process `ThreadPoolExecutor` scan worker for local research
+  inference; `POST /api/scans` admits a validated scan as `pending`, then the
+  worker records `processing` and `completed` or `failed` with safe retry/error
+  metadata. Raw audio is handed off in memory and released after the worker.
 - Consent-gated local transcript analyzer with fixed categories:
   `financial_request`, `credential_request`, `urgency_or_threat`,
   `impersonation`, and `remote_access_request`.
@@ -130,6 +136,7 @@ Important backend paths:
 - `backend/app/validation.py`
 - `backend/app/inference.py`
 - `backend/app/routes.py`
+- `backend/app/jobs.py`
 - `backend/app/request.py`
 - `backend/app/rate_limit.py`
 - `backend/tests/test_api.py`
@@ -137,6 +144,7 @@ Important backend paths:
 - `backend/tests/test_firebase_readiness.py`
 - `backend/app/transcript.py`
 - `backend/tests/test_transcript.py`
+- `backend/tests/test_scan_jobs.py`
 - `firestore.rules`
 - `firebase.json`
 - `FIRESTORE_SECURITY.md`
@@ -243,10 +251,14 @@ Protected with Firebase Bearer ID token:
 - `GET /api/scans/<scan_id>`
 - `DELETE /api/scans/<scan_id>`
 
+`POST /api/scans` returns HTTP `202` with top-level `status: "pending"`; the
+stored scan lifecycle is `pending` → `processing` → `completed` or `failed`.
 Scan results include status, model version, confidence when valid, model caveat,
-timestamp, expiry, separate voice status, and separate scam-language status,
-score, categories, and explanation. Raw audio and transcript text are never
-returned or stored. Firestore readiness is independent from model readiness.
+timestamps, expiry, safe attempt/retry metadata, separate voice status, and
+separate scam-language status, score, categories, and explanation. Failed scans
+include only safe error code/explanation fields. Raw audio and transcript text
+are never returned or stored. Firestore readiness is independent from model
+readiness.
 
 ## 6. How to run locally
 
@@ -316,7 +328,9 @@ Working folder: `backend/`.
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Result: **30 passed**.
+Result: **36 passed**. The async scan tests cover pending admission, explicit
+processing/completed and failed worker transitions, bounded transient retry,
+raw-content privacy, duplicate suppression, and owner isolation.
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q app tests ../ai_models
@@ -335,7 +349,7 @@ npm run build
 npm run lint
 ```
 
-Results: **20 frontend tests passed**, production build passed, and lint passed.
+Results: **26 frontend tests passed**, production build passed, and lint passed.
 React Router future-flag notices may appear; they are non-failing warnings.
 
 The transcript persistence regression test submits a consented transcript, then
@@ -343,7 +357,9 @@ reads the same scan through both list and detail endpoints. It verifies that
 `scam_status`, `scam_score`, `scam_categories`, and `scam_explanation` survive
 read-back while transcript and raw-transcript fields remain absent. The frontend
 refresh-race test verifies that a stale list response cannot replace fresh upload
-scam metadata.
+scam metadata. The async frontend tests verify queued/processing/failed display,
+polling, terminal polling stop, scam metadata preservation, and raw transcript
+suppression.
 
 ### Model/API smoke check
 
@@ -354,9 +370,10 @@ backend\.venv\Scripts\python.exe -m ai_models.smoke --model ai_models/artifacts/
 ```
 
 Result: passed. It exercised two saved held-out WAVs through Flask model loading,
-scan creation, read-back, and deletion using injected local test identity and an
-ephemeral repository. It made **zero cloud writes** and did not validate a live
-browser Firebase sign-in session.
+pending scan admission, worker completion, score verification, read-back, and
+deletion using injected local test identity and an ephemeral repository. It made
+**zero cloud writes** and did not validate a live browser Firebase sign-in
+session.
 
 ### Live Firebase/Firestore readiness
 
@@ -375,8 +392,11 @@ no browser credentials or private tokens are recorded in this memory file.
 - Live call monitoring/Twilio streaming is unavailable and requires consent,
   legal review, and an authorized supported call path.
 - Web upload accepts WAV only; MP3 support is offline dataset preparation only.
-- Inference is synchronous for bounded local research files; a worker/job queue
-  is required before larger or latency-sensitive deployment.
+- Scan inference is asynchronous behind a bounded, process-local
+  `ThreadPoolExecutor`. This is not a durable cross-process queue: queued jobs
+  are lost on process exit and each Gunicorn process has its own manager.
+  A durable shared queue is required before larger or latency-sensitive
+  deployment.
 - Rate limiting is process-local; multi-worker deployments need a shared gateway.
 - Firestore TTL for `expires_at` still needs operational configuration.
 - Firebase credentials, service-account JSON, raw audio, dataset files, manifests,
@@ -399,8 +419,9 @@ no browser credentials or private tokens are recorded in this memory file.
    and perform calibration/threshold analysis without using the holdout for tuning.
 3. Compare this baseline with a stronger evaluated speech model while retaining
    the same provenance and privacy controls.
-4. Move inference behind a worker/job queue and expose pending/processing/failed
-   job states before production-scale use.
+4. Replace the bounded in-process worker with a durable shared queue before
+   production-scale use; the API now exposes pending/processing/completed/failed
+   lifecycle states.
 5. Configure Firestore TTL operationally for `expires_at`.
 6. Validate and expand the local transcript rules using a labeled,
    privacy-reviewed corpus; do not send transcript text to an external service

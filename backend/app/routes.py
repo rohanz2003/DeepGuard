@@ -9,6 +9,7 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from .auth import token_required
 from .firebase import FirebaseUnavailable, utc_now
+from .jobs import JobQueueFull
 from .transcript import (
     TranscriptValidationError,
     analyze_transcript,
@@ -35,7 +36,13 @@ _PUBLIC_SCAN_FIELDS = (
     "model_version",
     "explanation",
     "created_at",
+    "updated_at",
     "expires_at",
+    "attempt",
+    "retry_count",
+    "max_attempts",
+    "error_code",
+    "error_explanation",
 )
 _SCAM_FIELDS = (
     "scam_status",
@@ -89,6 +96,18 @@ def _public_scan(scan: dict) -> dict:
     return public
 
 
+def _pending_inference() -> dict:
+    return {
+        "status": "pending",
+        "deepfake_status": "inconclusive",
+        "confidence": None,
+        "model_version": current_app.config.get("MODEL_VERSION", "not-configured"),
+        "explanation": (
+            "The upload was validated and queued for bounded in-process voice analysis."
+        ),
+    }
+
+
 def _scan_payload(
     metadata,
     inference,
@@ -96,6 +115,11 @@ def _scan_payload(
     created_at: str,
     expires_at: str,
     scam_result: dict | None = None,
+    *,
+    attempt: int = 0,
+    retry_count: int = 0,
+    max_attempts: int | None = None,
+    updated_at: str | None = None,
 ):
     # Transcript analysis is deliberately kept outside the audio inference
     # result.  This prevents the two independent signals from being combined.
@@ -111,7 +135,7 @@ def _scan_payload(
                 if field in scam_result
             }
         )
-    return {
+    payload = {
         "id": scan_id,
         "filename": metadata.filename,
         "mime_type": metadata.mime_type,
@@ -124,8 +148,14 @@ def _scan_payload(
         "model_version": inference["model_version"],
         "explanation": inference["explanation"],
         "created_at": created_at,
+        "updated_at": updated_at or created_at,
         "expires_at": expires_at,
+        "attempt": attempt,
+        "retry_count": retry_count,
     }
+    if max_attempts is not None:
+        payload["max_attempts"] = max_attempts
+    return payload
 
 
 @api.get("/health")
@@ -202,7 +232,13 @@ def list_scans():
                     1 for scan in scans if scan.get("status") == "completed"
                 ),
                 "inconclusive_results": sum(
-                    1 for scan in scans if scan.get("status") == "unavailable"
+                    1
+                    for scan in scans
+                    if scan.get("status") == "unavailable"
+                    or (
+                        scan.get("status") == "completed"
+                        and scan.get("deepfake_status") == "inconclusive"
+                    )
                 ),
             },
         }
@@ -245,14 +281,19 @@ def create_scan():
 
     created = utc_now()
     expires = created + timedelta(days=current_app.config["RETENTION_DAYS"])
-    inference = current_app.extensions["inference"].analyze(metadata)
+    job_manager = current_app.extensions["scan_jobs"]
     scan = _scan_payload(
         metadata,
-        inference,
+        _pending_inference(),
         str(uuid.uuid4()),
         created.isoformat(),
         expires.isoformat(),
         scam_result,
+        attempt=0,
+        retry_count=0,
+        max_attempts=getattr(
+            job_manager, "max_attempts", current_app.config["SCAN_MAX_ATTEMPTS"]
+        ),
     )
     try:
         stored = repository().create(g.current_user["id"], scan)
@@ -260,7 +301,57 @@ def create_scan():
         return storage_error(exc)
     except Exception as exc:
         return storage_error(exc)
-    return jsonify({"scan": _public_scan(stored)}), 201
+    try:
+        enqueue = getattr(job_manager, "enqueue", None) or getattr(
+            job_manager, "submit"
+        )
+        if not callable(enqueue):
+            raise RuntimeError("The scan job manager is not configured.")
+        enqueue(g.current_user["id"], scan["id"], metadata)
+    except JobQueueFull:
+        # Do not leave an accepted-looking pending record when the bounded
+        # worker boundary cannot accept its audio handoff.
+        try:
+            repository().delete(g.current_user["id"], scan["id"])
+        except Exception as exc:
+            current_app.logger.warning(
+                "Could not remove rejected scan (%s)", type(exc).__name__
+            )
+        return error("Scan processing is busy. Please try again shortly.", 503)
+    except Exception as exc:
+        current_app.logger.warning(
+            "Could not enqueue scan worker (%s)", type(exc).__name__
+        )
+        failure_updates = {
+            "status": "failed",
+            "deepfake_status": "inconclusive",
+            "confidence": None,
+            "explanation": "The scan could not be queued for processing.",
+            "error_code": "queue_unavailable",
+            "error_explanation": "The scan worker was unavailable.",
+            "attempt": 0,
+            "retry_count": 0,
+            "max_attempts": scan.get("max_attempts"),
+            "updated_at": utc_now().isoformat(),
+        }
+        failed = dict(stored)
+        failed.update(failure_updates)
+        try:
+            updated = repository().update(
+                g.current_user["id"],
+                scan["id"],
+                failure_updates,
+            )
+            if updated is not None:
+                failed = updated
+        except Exception as update_exc:
+            current_app.logger.warning(
+                "Could not record enqueue failure (%s)", type(update_exc).__name__
+            )
+        return jsonify({"status": "failed", "scan": _public_scan(failed)}), 503
+    # Always return the persisted admission state.  A fast worker may finish
+    # before jsonify runs, but POST remains a stable 202/pending contract.
+    return jsonify({"status": "pending", "scan": _public_scan(stored)}), 202
 
 
 @api.get("/scans/<scan_id>")

@@ -17,6 +17,19 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 - A dependency-light NumPy research baseline with deterministic preprocessing and JSON artifacts
 - Optional consented local transcript analysis with separate scam-language signals
 
+`POST /api/scans` validates the WAV and optional transcript synchronously,
+stores only metadata plus derived scam fields, and returns HTTP `202` with a
+top-level `status: "pending"`. A bounded in-process `ThreadPoolExecutor`
+worker performs voice inference and updates the owner-scoped record through
+`processing` to `completed` or `failed`. Raw audio remains in memory only for
+the worker handoff and is never stored or returned; transcript text is also
+never stored or returned. The worker supports bounded retries for one
+dedicated transient inference exception and records safe attempt/error fields.
+The dashboard shows queued/processing/failed states and polls the scan detail
+endpoint until a terminal state is reached.
+This is not a durable cross-process queue: queued work is lost if a process
+exits, and each process has its own bounded manager.
+
 ## Firebase setup
 
 Create a Firebase project, enable Email/Password authentication, create a web app, and enable Firestore. Copy the web configuration to `frontend/.env`:
@@ -142,7 +155,7 @@ npm run lint
 ## Next implementation slice
 
 1. Audit dataset licenses/labels and evaluate on a separate verified speaker/generator-disjoint corpus.
-2. Move inference to a worker/job queue before production-scale use; evaluate a stronger model against this baseline.
+2. Replace the bounded in-process worker with a durable shared job queue before production-scale use; evaluate a stronger model against this baseline.
 3. Expand and validate the local transcript rules with a labeled, privacy-reviewed corpus.
 4. Configure Firestore TTL operationally for the `expires_at` retention field.
 5. Investigate authorized Twilio call flows; do not assume browser call capture.

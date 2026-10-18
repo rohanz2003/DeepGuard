@@ -23,7 +23,8 @@ database produces HTTP 503 for scan routes rather than silently losing data.
 
 The API stores only user-scoped scan metadata in Firestore under
 `users/{firebase_uid}/scans/{scan_id}`. Raw audio is read into bounded memory
-for synchronous PCM validation/inference and is never stored or logged. `expires_at` is written
+for synchronous PCM/WAV validation and is handed to the bounded worker only;
+it is never stored or logged. `expires_at` is written
 for a 30-day default retention period and expired documents are removed when
 read. A separate Firestore TTL policy should be configured operationally for
 eventual cleanup.
@@ -62,9 +63,20 @@ transparent category-match heuristic, not a calibrated probability. It is kept
 separate from `deepfake_status` and `confidence`; the API never combines the two.
 When no transcript is supplied, scam status is `unavailable`.
 
-The current baseline runs the bounded inference call synchronously in the Flask
-request for small uploads. This is not a production worker architecture;
-larger or latency-sensitive deployments should move inference to a queue.
+`POST /api/scans` returns HTTP `202` with a top-level `status: "pending"` after
+synchronous WAV/transcript validation and metadata admission. The record then
+transitions through `pending` → `processing` → `completed` or `failed`.
+`updated_at`, `attempt`, `retry_count`, and `max_attempts` are safe lifecycle
+fields; failed records expose only a bounded `error_code` and safe
+`error_explanation`. A dedicated transient inference exception may retry up to
+`SCAN_MAX_ATTEMPTS`; validation and consent errors never enter the worker.
+
+The worker is a bounded in-process `ThreadPoolExecutor` with configurable
+worker count and queue capacity. It prevents duplicate processing for a scan
+within one process and releases raw audio after the worker finishes. This is
+not a durable cross-process queue: queued work is lost on process exit and
+each Gunicorn process has its own manager. Use a durable queue before relying
+on this lifecycle across restarts or multiple processes.
 
 The limiter is intentionally process-local and bounded. Deployments with more
 than one worker or instance must also enforce limits at a shared gateway.

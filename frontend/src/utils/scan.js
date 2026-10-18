@@ -1,3 +1,5 @@
+export const SCAN_POLL_INTERVAL_MS = 1500;
+
 export function normalizeScan(scan = {}) {
   const source = scan && typeof scan === "object" ? scan : {};
   const normalized = {
@@ -12,6 +14,8 @@ export function normalizeScan(scan = {}) {
       : [],
     scam_explanation: source.scam_explanation || "",
     model_version: source.model_version || "not-configured",
+    error_code: typeof source.error_code === "string" ? source.error_code : "",
+    error_explanation: typeof source.error_explanation === "string" ? source.error_explanation : "",
     expires_at: source.expires_at || null,
   };
 
@@ -20,6 +24,18 @@ export function normalizeScan(scan = {}) {
   delete normalized.transcript;
   delete normalized.transcript_text;
   return normalized;
+}
+
+export function isScanInFlight(status) {
+  return status === "pending" || status === "processing";
+}
+
+export function mergeScan(previousScan, nextScan) {
+  const previous = previousScan && typeof previousScan === "object" ? previousScan : {};
+  const next = nextScan && typeof nextScan === "object" ? nextScan : {};
+  const merged = { ...previous, ...next };
+  if (previous.status && !isScanInFlight(previous.status) && isScanInFlight(next.status)) merged.status = previous.status;
+  return normalizeScan(merged);
 }
 
 export function normalizeScanResponse(response = {}) {

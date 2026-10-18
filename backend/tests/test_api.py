@@ -40,6 +40,15 @@ class MemoryRepository:
         self.items[(user_id, scan["id"])] = dict(scan)
         return dict(scan)
 
+    def update(self, user_id, scan_id, updates):
+        scan = self.items.get((user_id, scan_id))
+        if scan is None:
+            return None
+        scan.update({key: value for key, value in updates.items() if key not in {
+            "audio", "audio_bytes", "transcript", "raw_transcript"
+        }})
+        return dict(scan)
+
     def list(self, user_id, now):
         result = []
         for key, scan in list(self.items.items()):
@@ -96,6 +105,9 @@ class ApiTestCase(unittest.TestCase):
             data={"consent": consent, "audio": (payload or make_wav(), filename, mimetype)},
             content_type="multipart/form-data",
         )
+
+    def wait_for_jobs(self):
+        self.app.extensions["scan_jobs"].wait_for_idle()
 
     def test_public_health_reports_model_and_injected_firebase_readiness(self):
         response = self.client.get("/api/health")
@@ -168,13 +180,17 @@ class ApiTestCase(unittest.TestCase):
         self.assertEqual(self.upload(make_wav(0.2)).status_code, 400)
         self.assertEqual(self.upload(make_wav(300.1)).status_code, 400)
         noisy = self.upload(make_wav(noisy=True))
-        self.assertEqual(noisy.status_code, 201)
+        self.assertEqual(noisy.status_code, 202)
+        self.assertEqual(noisy.get_json()["status"], "pending")
 
     def test_upload_contract_has_null_model_output_and_no_audio_storage(self):
         response = self.upload()
-        self.assertEqual(response.status_code, 201)
-        scan = response.get_json()["scan"]
-        self.assertEqual(scan["status"], "unavailable")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json()["status"], "pending")
+        scan_id = response.get_json()["scan"]["id"]
+        self.wait_for_jobs()
+        scan = self.client.get(f"/api/scans/{scan_id}", headers=self.auth()).get_json()["scan"]
+        self.assertEqual(scan["status"], "completed")
         self.assertEqual(scan["deepfake_status"], "inconclusive")
         self.assertEqual(scan["scam_status"], "unavailable")
         self.assertIsNone(scan["scam_score"])
@@ -213,7 +229,8 @@ class ApiTestCase(unittest.TestCase):
             data={"consent": "true", "audio": (make_wav(), "sample.wav", "audio/wav")},
             content_type="multipart/form-data",
         )
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 202)
+        app.extensions["scan_jobs"].wait_for_idle()
         self.assertTrue(received and received[0].startswith(b"RIFF"))
         self.assertNotIn("audio_bytes", response.get_json()["scan"])
 

@@ -5,6 +5,8 @@ export default function StatusBadge({ status }) {
     completed: ["Analyzed", "success"],
     complete: ["Analyzed", "success"],
     pending: ["Pending", "warning"],
+    processing: ["Processing", "warning"],
+    failed: ["Failed", "danger"],
     low: ["Lower signal", "success"],
     lower_signal: ["Lower signal", "success"],
     review: ["Needs review", "warning"],

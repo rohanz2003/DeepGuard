@@ -8,6 +8,7 @@ from werkzeug.exceptions import HTTPException
 from .config import Config
 from .firebase import FirebaseServices
 from .inference import ModelInferenceService
+from .jobs import ScanJobManager
 from .rate_limit import RateLimiter
 from .request import InMemoryRequest
 from .routes import api
@@ -32,6 +33,34 @@ def create_app(test_config=None):
         if "INFERENCE_SERVICE" in app.config
         else ModelInferenceService(app.config)
     )
+
+    def repository_provider():
+        injected = app.config.get("SCAN_REPOSITORY")
+        if injected is not None:
+            return injected
+        return app.extensions["firebase"].repository
+
+    injected_manager = app.config.get("SCAN_JOB_MANAGER")
+    if injected_manager is None:
+        injected_manager = app.config.get("JOB_MANAGER")
+    injected_executor = app.config.get("SCAN_JOB_EXECUTOR")
+    if injected_executor is None:
+        injected_executor = app.config.get("JOB_EXECUTOR")
+    app.extensions["scan_jobs"] = (
+        injected_manager
+        if injected_manager is not None
+        else ScanJobManager(
+            repository_provider,
+            app.extensions["inference"],
+            executor=injected_executor,
+            max_workers=app.config["SCAN_MAX_WORKERS"],
+            max_queue=app.config["SCAN_MAX_QUEUE"],
+            max_attempts=app.config["SCAN_MAX_ATTEMPTS"],
+        )
+    )
+    # Keep a descriptive alias for integrations that refer to the boundary as
+    # a job manager rather than a scan extension.
+    app.extensions["job_manager"] = app.extensions["scan_jobs"]
     app.extensions["rate_limiter"] = RateLimiter()
     CORS(
         app,

@@ -20,6 +20,17 @@ class _EphemeralRepository:
         self.items[(user_id, scan["id"])] = dict(scan)
         return dict(scan)
 
+    def update(self, user_id, scan_id, updates):
+        scan = self.items.get((user_id, scan_id))
+        if scan is None:
+            return None
+        scan.update({
+            key: value
+            for key, value in updates.items()
+            if key not in {"audio", "audio_bytes", "transcript", "raw_transcript"}
+        })
+        return dict(scan)
+
     def get(self, user_id, scan_id, _now):
         return self.items.get((user_id, scan_id))
 
@@ -59,17 +70,21 @@ def smoke_model(model_path, dataset_dir):
             "consent": "true",
             "audio": (io.BytesIO(record.audio_bytes), "smoke.wav", "audio/wav"),
         })
-        if response.status_code != 201:
+        if response.status_code != 202 or response.get_json().get("status") != "pending":
             raise ValueError("Flask scan creation failed")
-        scan = response.get_json()["scan"]
+        scan_id = response.get_json()["scan"]["id"]
+        app.extensions["scan_jobs"].wait_for_idle()
+        detail = client.get(f'/api/scans/{scan_id}', headers=headers)
+        if detail.status_code != 200:
+            raise ValueError("Flask scan read-back failed")
+        scan = detail.get_json()["scan"]
         if scan["status"] != "completed" or not isinstance(scan["confidence"], (int, float)):
             raise ValueError("model did not produce a finite research score")
         if not 0 <= scan["confidence"] <= 1 or "audio_bytes" in scan:
             raise ValueError("invalid score or unsafe stored metadata")
         if scan["model_version"] != model.metadata["model_version"]:
             raise ValueError("model version changed during scan creation")
-        detail = client.get(f'/api/scans/{scan["id"]}', headers=headers)
-        if detail.status_code != 200 or detail.get_json()["scan"] != scan:
+        if detail.get_json()["scan"] != scan:
             raise ValueError("scan read-back failed")
         if client.delete(f'/api/scans/{scan["id"]}', headers=headers).status_code != 200:
             raise ValueError("scan deletion failed")

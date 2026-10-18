@@ -4,8 +4,8 @@ The baseline API intentionally loads a JSON *description* of a model.  It
 never unpickles or executes code named by an artifact.  Runtime model and
 preprocessing modules are imported lazily from the project's ``ai_models``
 package, so a normal API install does not require NumPy or an ML framework.
-Inference is synchronous for this small baseline; production deployments
-should move it behind a worker/job queue before accepting larger workloads.
+The scan job manager calls this service behind a bounded in-process worker
+boundary; a dedicated transient exception is the only retryable failure.
 """
 
 from __future__ import annotations
@@ -31,6 +31,10 @@ _SAFE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 class ArtifactUnavailable(RuntimeError):
     """Raised internally when a model artifact cannot safely be used."""
+
+
+class TransientInferenceError(RuntimeError):
+    """Raised by an inference adapter when a bounded retry may succeed."""
 
 
 @dataclass(frozen=True)
@@ -268,7 +272,7 @@ def _risk_status(score: float, threshold: float) -> str:
 
 
 class ModelInferenceService:
-    """Synchronous adapter for the optional ai_models package."""
+    """Adapter for the optional ai_models package used by scan workers."""
 
     def __init__(self, settings: dict[str, Any], loader: JsonModelArtifactLoader | None = None):
         self.threshold = float(settings.get("MODEL_THRESHOLD", 0.5))
@@ -301,7 +305,11 @@ class ModelInferenceService:
                 predictor = getattr(module, artifact.predictor)
             prediction = _call_with_optional_contract(predictor, features, artifact)
             score = _score_from_prediction(prediction)
-        except (Exception,):
+        except TransientInferenceError:
+            # The scan worker owns the retry policy.  Do not turn this
+            # dedicated signal into an inconclusive successful result.
+            raise
+        except Exception:
             # Inference failures fail closed and never expose model internals.
             return unavailable_result(artifact.model_version)
         status = _risk_status(score, self.threshold)

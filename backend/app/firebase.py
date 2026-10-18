@@ -59,7 +59,7 @@ class FirestoreScanRepository:
     def _public(cls, document) -> dict:
         data = cls._metadata_only(document.to_dict() or {})
         data["id"] = document.id
-        for key in ("created_at", "expires_at"):
+        for key in ("created_at", "updated_at", "expires_at"):
             if key in data:
                 data[key] = _as_iso(data[key])
         return data
@@ -68,9 +68,34 @@ class FirestoreScanRepository:
         reference = self._collection(user_id).document(scan["id"])
         stored = self._metadata_only(scan)
         stored["created_at"] = datetime.fromisoformat(scan["created_at"])
+        stored["updated_at"] = datetime.fromisoformat(
+            scan.get("updated_at", scan["created_at"])
+        )
         stored["expires_at"] = datetime.fromisoformat(scan["expires_at"])
         reference.set(stored)
-        return dict(stored, created_at=scan["created_at"], expires_at=scan["expires_at"])
+        return dict(
+            stored,
+            created_at=scan["created_at"],
+            updated_at=scan.get("updated_at", scan["created_at"]),
+            expires_at=scan["expires_at"],
+        )
+
+    def update(self, user_id: str, scan_id: str, updates: dict) -> dict | None:
+        """Update safe metadata and return the owner-scoped record."""
+        reference = self._collection(user_id).document(scan_id)
+        document = reference.get()
+        if not document.exists:
+            return None
+
+        stored = self._metadata_only(updates)
+        if "updated_at" in stored:
+            if isinstance(stored["updated_at"], str):
+                stored["updated_at"] = datetime.fromisoformat(stored["updated_at"])
+        reference.update(stored)
+        updated = reference.get()
+        if not updated.exists:
+            return None
+        return self._public(updated)
 
     def list(self, user_id: str, now: datetime) -> list[dict]:
         items = []

@@ -64,8 +64,11 @@ class ModelPipelineTests(unittest.TestCase):
                 "consent": "true",
                 "audio": (io.BytesIO(tone(240)), "fixture.wav", "audio/wav"),
             })
-            self.assertEqual(response.status_code, 201)
-            scan = response.get_json()["scan"]
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.get_json()["status"], "pending")
+            app.extensions["scan_jobs"].wait_for_idle()
+            scan_id = response.get_json()["scan"]["id"]
+            scan = client.get(f'/api/scans/{scan_id}', headers=headers).get_json()["scan"]
             self.assertEqual(scan["status"], "completed")
             self.assertTrue(0 <= scan["confidence"] <= 1)
             self.assertEqual(scan["scam_status"], "unavailable")

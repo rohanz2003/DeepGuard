@@ -94,7 +94,8 @@ class TranscriptApiTests(unittest.TestCase):
 
     def test_empty_transcript_remains_unavailable_without_transcript_consent(self):
         response = self.post_scan(transcript="")
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.get_json()["status"], "pending")
         scan = response.get_json()["scan"]
         self.assertEqual(scan["scam_status"], "unavailable")
         self.assertIsNone(scan["scam_score"])
@@ -144,8 +145,12 @@ class TranscriptApiTests(unittest.TestCase):
             },
             content_type="multipart/form-data",
         )
-        self.assertEqual(response.status_code, 201)
-        scan = response.get_json()["scan"]
+        self.assertEqual(response.status_code, 202)
+        scan_id = response.get_json()["scan"]["id"]
+        app.extensions["scan_jobs"].wait_for_idle()
+        scan = app.test_client().get(
+            f"/api/scans/{scan_id}", headers={"Authorization": "Bearer token"}
+        ).get_json()["scan"]
         self.assertEqual(scan["deepfake_status"], "high")
         self.assertEqual(scan["confidence"], 0.95)
         self.assertEqual(scan["scam_status"], "lower_signal")
@@ -157,8 +162,12 @@ class TranscriptApiTests(unittest.TestCase):
         created = self.post_scan(
             transcript="Please install AnyDesk.", transcript_consent="true"
         )
-        self.assertEqual(created.status_code, 201)
-        scan = created.get_json()["scan"]
+        self.assertEqual(created.status_code, 202)
+        scan_id = created.get_json()["scan"]["id"]
+        self.app.extensions["scan_jobs"].wait_for_idle()
+        scan = self.client.get(
+            f"/api/scans/{scan_id}", headers={"Authorization": "Bearer alice-token"}
+        ).get_json()["scan"]
         self.assertEqual(scan["scam_categories"], ["remote_access_request"])
         self.assertNotIn("transcript", scan)
 
@@ -184,8 +193,12 @@ class TranscriptApiTests(unittest.TestCase):
         }
 
         created = self.post_scan(transcript=transcript, transcript_consent="true")
-        self.assertEqual(created.status_code, 201)
-        created_scan = created.get_json()["scan"]
+        self.assertEqual(created.status_code, 202)
+        scan_id = created.get_json()["scan"]["id"]
+        self.app.extensions["scan_jobs"].wait_for_idle()
+        created_scan = self.client.get(
+            f"/api/scans/{scan_id}", headers={"Authorization": "Bearer alice-token"}
+        ).get_json()["scan"]
         expected["scam_explanation"] = created_scan["scam_explanation"]
         self.assertIn("independent of the deepfake score", expected["scam_explanation"])
         for field, value in expected.items():

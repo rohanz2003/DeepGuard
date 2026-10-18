@@ -7,7 +7,7 @@ import LiveCallsPage from "../pages/LiveCallsPage";
 import SettingsPage from "../pages/SettingsPage";
 import NotFoundPage from "../pages/NotFoundPage";
 import { apiErrorMessage, apiService } from "../services/api";
-import { normalizeScan, normalizeScanResponse } from "../utils/scan";
+import { mergeScan, normalizeScan, normalizeScanResponse } from "../utils/scan";
 
 const navItems = [{ to: "/", label: "Overview", icon: "grid" }, { to: "/history", label: "Scan history", icon: "history" }, { to: "/live-calls", label: "Live calls", icon: "radio", planned: true }];
 const emptyData = { scans: [], stats: { total_scans: 0, suspicious_results: 0, analyzed_results: 0, inconclusive_results: 0 } };
@@ -34,6 +34,14 @@ function mergeListResponse(response, uploadedScans) {
   });
   const scans = [...uploaded, ...normalized.scans.filter((scan) => !uploadedIds.has(scan.id))];
   return { ...normalized, scans, stats: { ...normalized.stats, total_scans: Math.max(normalized.stats.total_scans || 0, scans.length) } };
+}
+
+function uploadNotice(status) {
+  if (status === "pending") return "Recording queued for analysis. This result will update automatically.";
+  if (status === "processing") return "Recording is processing. This result will update automatically.";
+  if (status === "failed") return "Recording analysis failed. Open the result for details.";
+  if (status === "completed") return "Recording analyzed. Review the separate voice and scam-language signals.";
+  return "Recording validated. Review the result for its current analysis status.";
 }
 
 export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
@@ -105,9 +113,51 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
       });
     }
     setSelectedId(normalized?.id || null);
-    setNotice(scan?.status === "completed" ? "Recording analyzed. Review the separate voice and scam-language signals." : "Upload validated. The result is inconclusive until a model is connected.");
+    setNotice(uploadNotice(scan?.status));
     reload();
   };
+  const onScanUpdate = useCallback((scan) => {
+    const normalized = scan?.id ? normalizeScan(scan) : null;
+    if (!normalized) return;
+
+    const previousEntry = uploadedScansRef.current.get(normalized.id);
+    const merged = mergeScan(previousEntry?.scan, normalized);
+    const fields = new Set([
+      ...(previousEntry?.fields || []),
+      ...Object.keys(scan).filter((field) => !sensitiveScanFields.has(field)),
+    ]);
+    uploadedScansRef.current = new Map([
+      [merged.id, { scan: merged, fields }],
+      ...[...uploadedScansRef.current.entries()].filter(([id]) => id !== merged.id),
+    ]);
+    setData((current) => {
+      const hasScan = current.scans.some((item) => item.id === merged.id);
+      const scans = hasScan
+        ? current.scans.map((item) => (item.id === merged.id ? merged : item))
+        : [merged, ...current.scans];
+      return {
+        ...current,
+        scans,
+        stats: { ...current.stats, total_scans: Math.max(current.stats.total_scans || 0, scans.length) },
+      };
+    });
+  }, []);
   const displayUser = user || { email: "preview@example.invalid" };
-  return <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""} ${mobileOpen ? "mobile-nav-open" : ""}`}><aside className="sidebar"><div className="sidebar-top"><NavLink to={readOnly ? "/preview" : "/"} className="brand" onClick={() => setMobileOpen(false)}><span className="brand-mark"><Icon name="shield" size={20} /></span><span className="brand-name">Deep<span>Guard</span></span></NavLink><button className="icon-button collapse-button" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}><Icon name="menu" size={19} /></button></div><div className="workspace-chip"><span className="workspace-avatar">{displayUser.email[0].toUpperCase()}</span><span><strong>{readOnly ? "Read-only preview" : "Personal workspace"}</strong><small>{readOnly ? "No account connected" : displayUser.email}</small></span></div><nav className="main-nav" aria-label="Main navigation"><p className="nav-label">Workspace</p>{navItems.map((item) => <NavLink key={item.to} to={readOnly ? `/preview${item.to === "/" ? "" : item.to}` : item.to} end={item.to === "/"} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.planned && <span className="planned-dot" title="Unavailable capability">Unavailable</span>}</NavLink>)}<p className="nav-label secondary">Manage</p><NavLink to={readOnly ? "/preview/settings" : "/settings"} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><Icon name="settings" size={18} /><span>Settings</span></NavLink></nav><div className="sidebar-bottom"><div className="privacy-note"><Icon name="lock" size={16} /><span><strong>Privacy mode</strong><small>Audio is not retained</small></span></div>{readOnly ? <button className="nav-item sign-out" onClick={() => navigate("/login")}><Icon name="logout" size={18} /><span>Sign in</span></button> : <button className="nav-item sign-out" onClick={onSignOut}><Icon name="logout" size={18} /><span>Sign out</span></button>}</div></aside>{mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}<main className="main-content"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Icon name="menu" size={20} /></button><div className="breadcrumbs"><span>{readOnly ? "Preview" : "Workspace"}</span><b>/</b><strong>{pageTitle}</strong></div><div className="top-actions"><button className="theme-toggle icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}><Icon name={theme === "light" ? "moon" : "sun"} size={18} /></button><div className="top-user"><span>{displayUser.email[0].toUpperCase()}</span><strong>{readOnly ? "Preview" : displayUser.email.split("@")[0]}</strong></div></div></header>{readOnly && <div className="global-notice preview-notice"><Icon name="info" size={16} /><span>Read-only Preview workspace — no account data, private API requests, or actions are enabled.</span><button onClick={() => navigate("/login")} className="link-button">Sign in</button></div>}{notice && <div className="global-notice" role="status"><Icon name="info" size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss notification">×</button></div>}{loadError && <div className="global-notice error-notice" role="alert"><Icon name="alert" size={16} /><span>{loadError}</span><button onClick={() => { setLoadError(""); reload(); }}>Retry</button></div>}<div className="page-content"><Routes><Route index element={<OverviewPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} onSelect={setSelectedId} onDelete={deleteScan} onUploaded={onUploaded} navigate={navigate} readOnly={readOnly} />} /><Route path="history" element={<HistoryPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} onSelect={setSelectedId} onDelete={deleteScan} navigate={navigate} readOnly={readOnly} />} /><Route path="live-calls" element={<LiveCallsPage />} /><Route path="settings" element={<SettingsPage theme={theme} setTheme={setTheme} />} /><Route path="*" element={<NotFoundPage />} /></Routes></div></main></div>;
+
+  return <div className={`app-shell ${collapsed ? "sidebar-collapsed" : ""} ${mobileOpen ? "mobile-nav-open" : ""}`}>
+    <aside className="sidebar">
+      <div className="sidebar-top"><NavLink to={readOnly ? "/preview" : "/"} className="brand" onClick={() => setMobileOpen(false)}><span className="brand-mark"><Icon name="shield" size={20} /></span><span className="brand-name">Deep<span>Guard</span></span></NavLink><button className="icon-button collapse-button" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}><Icon name="menu" size={19} /></button></div>
+      <div className="workspace-chip"><span className="workspace-avatar">{displayUser.email[0].toUpperCase()}</span><span><strong>{readOnly ? "Read-only preview" : "Personal workspace"}</strong><small>{readOnly ? "No account connected" : displayUser.email}</small></span></div>
+      <nav className="main-nav" aria-label="Main navigation"><p className="nav-label">Workspace</p>{navItems.map((item) => <NavLink key={item.to} to={readOnly ? `/preview${item.to === "/" ? "" : item.to}` : item.to} end={item.to === "/"} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.planned && <span className="planned-dot" title="Unavailable capability">Unavailable</span>}</NavLink>)}<p className="nav-label secondary">Manage</p><NavLink to={readOnly ? "/preview/settings" : "/settings"} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><Icon name="settings" size={18} /><span>Settings</span></NavLink></nav>
+      <div className="sidebar-bottom"><div className="privacy-note"><Icon name="lock" size={16} /><span><strong>Privacy mode</strong><small>Audio is not retained</small></span></div>{readOnly ? <button className="nav-item sign-out" onClick={() => navigate("/login")}><Icon name="logout" size={18} /><span>Sign in</span></button> : <button className="nav-item sign-out" onClick={onSignOut}><Icon name="logout" size={18} /><span>Sign out</span></button>}</div>
+    </aside>
+    {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}
+    <main className="main-content">
+      <header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Icon name="menu" size={20} /></button><div className="breadcrumbs"><span>{readOnly ? "Preview" : "Workspace"}</span><b>/</b><strong>{pageTitle}</strong></div><div className="top-actions"><button className="theme-toggle icon-button" onClick={() => setTheme(theme === "light" ? "dark" : "light")} aria-label={`Switch to ${theme === "light" ? "dark" : "light"} theme`}><Icon name={theme === "light" ? "moon" : "sun"} size={18} /></button><div className="top-user"><span>{displayUser.email[0].toUpperCase()}</span><strong>{readOnly ? "Preview" : displayUser.email.split("@")[0]}</strong></div></div></header>
+      {readOnly && <div className="global-notice preview-notice"><Icon name="info" size={16} /><span>Read-only Preview workspace — no account data, private API requests, or actions are enabled.</span><button onClick={() => navigate("/login")} className="link-button">Sign in</button></div>}
+      {notice && <div className="global-notice" role="status"><Icon name="info" size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss notification">×</button></div>}
+      {loadError && <div className="global-notice error-notice" role="alert"><Icon name="alert" size={16} /><span>{loadError}</span><button onClick={() => { setLoadError(""); reload(); }}>Retry</button></div>}
+      <div className="page-content"><Routes><Route index element={<OverviewPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} onSelect={setSelectedId} onDelete={deleteScan} onUploaded={onUploaded} onScanUpdate={onScanUpdate} navigate={navigate} readOnly={readOnly} />} /><Route path="history" element={<HistoryPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} onSelect={setSelectedId} onDelete={deleteScan} onScanUpdate={onScanUpdate} navigate={navigate} readOnly={readOnly} />} /><Route path="live-calls" element={<LiveCallsPage />} /><Route path="settings" element={<SettingsPage theme={theme} setTheme={setTheme} />} /><Route path="*" element={<NotFoundPage />} /></Routes></div>
+    </main>
+  </div>;
 }

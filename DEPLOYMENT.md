@@ -25,6 +25,12 @@ context and must be mounted or supplied by the runtime. The image defaults to
 `ENVIRONMENT=production` and an empty allowlist for `CORS_ORIGINS`, so a
 deployment must explicitly provide its public frontend origin.
 
+Scan inference is currently a bounded in-process worker. Each Gunicorn process
+has its own manager, and queued in-memory audio is lost if that process exits.
+This lifecycle is suitable for the current bounded MVP, but a durable shared
+queue and retry store are required before relying on processing across restarts
+or multiple independently scaled instances.
+
 ## Backend process and container
 
 `backend/requirements.txt` pins `gunicorn==23.0.0`. The production WSGI target

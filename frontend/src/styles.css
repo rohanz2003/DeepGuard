@@ -259,9 +259,12 @@ h2 { letter-spacing: -0.035em; }
 .result-actions { display: flex; align-items: center; gap: 10px; }
 .result-body { padding: 23px 25px; }
 .inconclusive-panel { padding: 15px; display: flex; align-items: flex-start; gap: 12px; border: 1px solid color-mix(in srgb, var(--amber) 28%, var(--line)); border-radius: 11px; background: var(--amber-pale); }
+.inconclusive-panel.failure-panel { border-color: color-mix(in srgb, var(--red) 28%, var(--line)); background: var(--red-pale); }
 .inconclusive-icon { width: 35px; height: 35px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: var(--amber); border-radius: 10px; background: color-mix(in srgb, var(--amber) 12%, var(--surface)); }
+.failure-panel .inconclusive-icon { color: var(--red); background: color-mix(in srgb, var(--red) 12%, var(--surface)); }
 .inconclusive-panel strong { color: var(--ink-soft); font-size: 13px; }
 .inconclusive-panel p { max-width: 700px; margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.failure-code { display: block; margin-top: 7px; color: var(--red); font-size: 10px; font-weight: 700; }
 .signal-grid { margin-top: 22px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .signal-card { min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); }
 .voice-signal-card { border-color: color-mix(in srgb, var(--blue) 25%, var(--line)); }

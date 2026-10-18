@@ -77,6 +77,12 @@ class Config:
             "UPLOAD_RATE_LIMIT_PER_MINUTE": int(
                 os.getenv("UPLOAD_RATE_LIMIT_PER_MINUTE", "10")
             ),
+            # Scan processing is deliberately bounded and process-local.  A
+            # worker process restart drops queued jobs, so this is not a
+            # durable queue configuration.
+            "SCAN_MAX_WORKERS": int(os.getenv("SCAN_MAX_WORKERS", "2")),
+            "SCAN_MAX_QUEUE": int(os.getenv("SCAN_MAX_QUEUE", "8")),
+            "SCAN_MAX_ATTEMPTS": int(os.getenv("SCAN_MAX_ATTEMPTS", "2")),
         }
 
     @staticmethod
@@ -105,3 +111,9 @@ class Config:
             "RATE_LIMIT_PER_MINUTE", "UPLOAD_RATE_LIMIT_PER_MINUTE"
         )):
             raise ValueError("Rate limits must be within 1 to 10000 per minute.")
+        if not 1 <= settings["SCAN_MAX_WORKERS"] <= 32:
+            raise ValueError("SCAN_MAX_WORKERS must be between 1 and 32.")
+        if not 0 <= settings["SCAN_MAX_QUEUE"] <= 1000:
+            raise ValueError("SCAN_MAX_QUEUE must be between 0 and 1000.")
+        if not 1 <= settings["SCAN_MAX_ATTEMPTS"] <= 5:
+            raise ValueError("SCAN_MAX_ATTEMPTS must be between 1 and 5.")
