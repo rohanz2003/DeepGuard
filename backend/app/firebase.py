@@ -27,6 +27,10 @@ def _as_iso(value: Any) -> str:
 class FirestoreScanRepository:
     """Stores metadata at users/{uid}/scans/{scan_id}; audio never reaches it."""
 
+    _RAW_CONTENT_FIELDS = frozenset(
+        {"transcript", "raw_transcript", "audio", "audio_bytes"}
+    )
+
     def __init__(self, firestore_client):
         self._client = firestore_client
 
@@ -44,8 +48,16 @@ class FirestoreScanRepository:
         )
 
     @staticmethod
-    def _public(document) -> dict:
-        data = document.to_dict() or {}
+    def _metadata_only(data: dict) -> dict:
+        return {
+            key: value
+            for key, value in data.items()
+            if key not in FirestoreScanRepository._RAW_CONTENT_FIELDS
+        }
+
+    @classmethod
+    def _public(cls, document) -> dict:
+        data = cls._metadata_only(document.to_dict() or {})
         data["id"] = document.id
         for key in ("created_at", "expires_at"):
             if key in data:
@@ -54,11 +66,11 @@ class FirestoreScanRepository:
 
     def create(self, user_id: str, scan: dict) -> dict:
         reference = self._collection(user_id).document(scan["id"])
-        stored = dict(scan)
+        stored = self._metadata_only(scan)
         stored["created_at"] = datetime.fromisoformat(scan["created_at"])
         stored["expires_at"] = datetime.fromisoformat(scan["expires_at"])
         reference.set(stored)
-        return dict(scan)
+        return dict(stored, created_at=scan["created_at"], expires_at=scan["expires_at"])
 
     def list(self, user_id: str, now: datetime) -> list[dict]:
         items = []

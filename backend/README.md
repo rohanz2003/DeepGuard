@@ -43,8 +43,24 @@ missing files, malformed JSON, and contract mismatches leave model health as
 `unavailable` and preserve the existing inconclusive scan response. The model
 score is an uncalibrated synthetic-audio indicator: it is mapped to `low`,
 `review`, or `high` around the configured threshold, not a probability of fraud.
-Scam status remains unavailable until transcript support exists. Model health
-explicitly returns `research_only: true`.
+Model health explicitly returns `research_only: true`.
+
+## Local transcript analysis
+
+`POST /api/scans` accepts optional `transcript` and `transcript_consent=true`
+multipart fields. Non-empty transcript text without affirmative consent, or text
+over 12,000 characters, returns HTTP 400. The local analyzer in
+`backend/app/transcript.py` uses five fixed categories and returns only:
+
+- `scam_status`
+- `scam_score`
+- `scam_categories`
+- `scam_explanation`
+
+Raw transcript text is never stored, returned, or logged. A transcript score is a
+transparent category-match heuristic, not a calibrated probability. It is kept
+separate from `deepfake_status` and `confidence`; the API never combines the two.
+When no transcript is supplied, scam status is `unavailable`.
 
 The current baseline runs the bounded inference call synchronously in the Flask
 request for small uploads. This is not a production worker architecture;

@@ -1,0 +1,20 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The browser may read only the authenticated user's scan metadata.
+    // The user ID is taken from the document path, not from client data.
+    match /users/{uid}/scans/{scanId} {
+      allow get, list: if request.auth != null && request.auth.uid == uid;
+
+      // Scan results are derived data. The Flask backend writes them with
+      // Firebase Admin SDK, which bypasses Firestore Security Rules.
+      allow create, update, delete: if false;
+    }
+
+    // Keep user records, other collections, and every unlisted path private.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

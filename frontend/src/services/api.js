@@ -21,10 +21,18 @@ export const apiService = {
   verifySession: () => api.get("/auth/me"),
   listScans: () => api.get("/scans"),
   getScan: (id) => api.get(`/scans/${encodeURIComponent(id)}`),
-  uploadScan: (file) => {
+  uploadScan: (file, transcript = "", transcriptConsent = false) => {
+    // Keep the service tolerant of an options object while the public call
+    // remains backward-compatible with uploadScan(file).
+    if (transcript && typeof transcript === "object") {
+      transcriptConsent = transcript.transcriptConsent ?? transcript.transcript_consent ?? false;
+      transcript = transcript.transcript || "";
+    }
     const body = new FormData();
     body.append("audio", file);
     body.append("consent", "true");
+    body.append("transcript", transcript || "");
+    body.append("transcript_consent", transcriptConsent ? "true" : "false");
     return api.post("/scans", body);
   },
   deleteScan: (id) => api.delete(`/scans/${encodeURIComponent(id)}`),

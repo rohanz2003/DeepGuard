@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from .transcript import unavailable_scam_result
+
 
 ARTIFACT_SCHEMA = "deepguard-model"
 ARTIFACT_SCHEMAS = {ARTIFACT_SCHEMA, "deepguard.model"}
@@ -212,10 +214,9 @@ class UnavailableInferenceService:
 
 
 def unavailable_result(version: str = "not-configured") -> dict[str, Any]:
-    return {
+    result = {
         "status": "unavailable",
         "deepfake_status": "inconclusive",
-        "scam_status": "unavailable",
         "confidence": None,
         "model_version": version,
         "explanation": (
@@ -223,6 +224,8 @@ def unavailable_result(version: str = "not-configured") -> dict[str, Any]:
             "No risk claim was generated."
         ),
     }
+    result.update(unavailable_scam_result())
+    return result
 
 
 def _call_with_optional_contract(function: Callable[..., Any], value: Any, artifact: ModelArtifact):
@@ -305,13 +308,13 @@ class ModelInferenceService:
         return {
             "status": "completed",
             "deepfake_status": status,
-            "scam_status": "unavailable",
             "confidence": round(score, 4),
             "model_version": artifact.model_version,
             "explanation": (
                 "Research baseline only: this uncalibrated audio score is not the probability "
                 "that a caller is fraudulent and is not proof that a voice is fake. "
                 f"The synthetic-audio model score was {score:.3f}; the configured threshold is "
-                f"{self.threshold:.3f}. Scam status is unavailable until transcript support exists."
+                f"{self.threshold:.3f}."
             ),
+            **unavailable_scam_result(),
         }

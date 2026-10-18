@@ -5,10 +5,11 @@
 Project: **AI Powered Deepfake Voice and Scam Call Detector for Secure Communication**.
 
 The product helps a person review a consented voice recording for synthetic or
-manipulated-audio risk. It must present model output as probabilistic evidence,
-not proof that a voice is fake, that a caller is fraudulent, or that a call is a
-scam. Scam-language analysis, explainability, and authorized telephony streaming
-remain separate capabilities and are not enabled in the current build.
+manipulated-audio risk and optionally review a consented transcript for local
+scam-language signals. It must present model output as probabilistic/heuristic
+evidence, not proof that a voice is fake, that a caller is fraudulent, or that a
+call is a scam. Explainability and authorized telephony streaming remain separate
+capabilities; telephony is not enabled.
 
 The original project requirements are in:
 
@@ -32,7 +33,11 @@ The original project requirements are in:
 - Database: Firestore, selected instead of MongoDB or SQLite.
 - Storage: scan metadata only under `users/{firebase_uid}/scans/{scan_id}`;
   uploaded audio is never persisted.
+- Firestore rules: authenticated clients may read only their own scan metadata;
+  client writes are denied and the Flask Firebase Admin backend is the sole
+  writer. See `firestore.rules` and `FIRESTORE_SECURITY.md`.
 - ML: optional local NumPy research baseline loaded from a validated JSON artifact.
+- Transcript analysis: local deterministic regex rules only; no external NLP API.
 - Deployment intent: HTTPS in production; current `python run.py` server is for
   local development only.
 - Telephony: not implemented; the browser must not be assumed to capture
@@ -62,10 +67,16 @@ Implemented in `frontend/`:
   - needs review,
   - higher signal,
   - inconclusive/unavailable.
+- Optional transcript textarea with a 12,000-character limit and separate
+  transcript-consent checkbox.
+- Separate voice-authenticity and scam-language result cards; scores are never
+  combined.
+- Upload results are merged into local history state and protected from stale
+  list responses during refresh.
 - UI refuses to display invalid confidence values as real scores.
 - Dynamic model readiness from `/api/health`.
 - Research-only caveats in result explanations.
-- No scam-language score until a consented transcript feature exists.
+- Scam-language signal shows unavailable when no consented transcript is supplied.
 
 Important frontend paths:
 
@@ -102,6 +113,13 @@ Implemented in `backend/app/`:
 - 30-day scan metadata expiry field and expiry-on-read behavior.
 - Safe JSON model artifact loader with strict feature-contract validation.
 - Optional synchronous baseline inference for small local research uploads.
+- Consent-gated local transcript analyzer with fixed categories:
+  `financial_request`, `credential_request`, `urgency_or_threat`,
+  `impersonation`, and `remote_access_request`.
+- Stable public scan response boundary for POST, list, and detail endpoints;
+  derived scam fields are preserved while raw content is filtered.
+- Raw transcript excluded from Firestore persistence, API read-back, normalized
+  frontend state, and logs.
 
 Important backend paths:
 
@@ -117,6 +135,12 @@ Important backend paths:
 - `backend/tests/test_api.py`
 - `backend/tests/test_model_pipeline.py`
 - `backend/tests/test_firebase_readiness.py`
+- `backend/app/transcript.py`
+- `backend/tests/test_transcript.py`
+- `firestore.rules`
+- `firebase.json`
+- `FIRESTORE_SECURITY.md`
+- `DEPLOYMENT.md`
 
 The model path in private `backend/.env` is relative to `backend/`:
 `../ai_models/artifacts/baseline.json`. Credentials and service-account content
@@ -214,13 +238,15 @@ Protected with Firebase Bearer ID token:
 
 - `GET /api/auth/me`
 - `GET /api/scans`
-- `POST /api/scans` with multipart `audio` and `consent=true`.
+- `POST /api/scans` with multipart `audio` and `consent=true`; optional
+  `transcript` plus `transcript_consent=true` for local scam-language review.
 - `GET /api/scans/<scan_id>`
 - `DELETE /api/scans/<scan_id>`
 
 Scan results include status, model version, confidence when valid, model caveat,
-timestamp, expiry, and separate scam status. Raw audio is never returned or
-stored. Firestore readiness is independent from model readiness.
+timestamp, expiry, separate voice status, and separate scam-language status,
+score, categories, and explanation. Raw audio and transcript text are never
+returned or stored. Firestore readiness is independent from model readiness.
 
 ## 6. How to run locally
 
@@ -290,7 +316,7 @@ Working folder: `backend/`.
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Result: **21 passed**.
+Result: **30 passed**.
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q app tests ../ai_models
@@ -309,8 +335,15 @@ npm run build
 npm run lint
 ```
 
-Results: **13 frontend tests passed**, production build passed, and lint passed.
+Results: **20 frontend tests passed**, production build passed, and lint passed.
 React Router future-flag notices may appear; they are non-failing warnings.
+
+The transcript persistence regression test submits a consented transcript, then
+reads the same scan through both list and detail endpoints. It verifies that
+`scam_status`, `scam_score`, `scam_categories`, and `scam_explanation` survive
+read-back while transcript and raw-transcript fields remain absent. The frontend
+refresh-race test verifies that a stale list response cannot replace fresh upload
+scam metadata.
 
 ### Model/API smoke check
 
@@ -327,16 +360,18 @@ browser Firebase sign-in session.
 
 ### Live Firebase/Firestore readiness
 
-A fresh backend app instance currently reports Firebase and Firestore storage
-ready through a read-only probe. The probe previously used a Firestore-reserved
-document ID and was fixed to use a valid non-reserved ID. No cloud scan record
-was created by the readiness check.
+A fresh backend app instance reports Firebase and Firestore storage ready through
+a read-only probe when the configured service account and network are available.
+The probe uses a valid non-reserved document ID and creates no cloud scan record.
+The live signed-in browser upload/read-back flow still requires a user session;
+no browser credentials or private tokens are recorded in this memory file.
 
 ## 8. Known gaps and constraints
 
 - The baseline is not a CNN/RNN/Wav2Vec production detector.
 - Scores are uncalibrated synthetic-audio indicators, not fraud probabilities.
-- Scam-language/NLP transcript analysis is unavailable.
+- Scam-language analysis is local rule-based heuristics, not NLP certainty or a
+  calibrated probability; its rules require further labeled validation.
 - Live call monitoring/Twilio streaming is unavailable and requires consent,
   legal review, and an authorized supported call path.
 - Web upload accepts WAV only; MP3 support is offline dataset preparation only.
@@ -349,6 +384,12 @@ was created by the readiness check.
   committed.
 - No production deployment, HTTPS hosting, monitoring, drift detection, rollback,
   or incident-response setup has been completed.
+- Provider-neutral production artifacts now exist (`backend/Dockerfile`,
+  `frontend/Dockerfile`, `Procfile`, and Nginx/Gunicorn configuration), but they
+  still require a chosen hosting provider, deployed domains, and an external
+  signed-in browser smoke test.
+- Browser transcript input is optional and consent-gated; transcript text is not
+  retained by default.
 
 ## 9. Next concrete steps
 
@@ -361,7 +402,8 @@ was created by the readiness check.
 4. Move inference behind a worker/job queue and expose pending/processing/failed
    job states before production-scale use.
 5. Configure Firestore TTL operationally for `expires_at`.
-6. Add transcript analysis only after consent, privacy, and external-data handling
-   review.
+6. Validate and expand the local transcript rules using a labeled,
+   privacy-reviewed corpus; do not send transcript text to an external service
+   without a separate consent/data-handling decision.
 7. Investigate authorized Twilio-supported flows; do not add arbitrary browser
    cellular-call capture or automatic call blocking.

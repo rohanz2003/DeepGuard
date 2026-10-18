@@ -1,0 +1,15 @@
+.git
+.gitignore
+**/.env
+**/.env.*
+!**/.env.example
+**/__pycache__
+*.py[cod]
+backend/.venv
+backend/.pytest_cache
+backend/data
+backend/tests
+dataset
+ai_models/artifacts
+frontend/node_modules
+frontend/dist

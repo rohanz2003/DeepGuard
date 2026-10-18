@@ -15,6 +15,7 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 - Explicit unavailable, empty, loading, error, and success states
 - Backend tests for auth, health, validation, persistence, and authorization
 - A dependency-light NumPy research baseline with deterministic preprocessing and JSON artifacts
+- Optional consented local transcript analysis with separate scam-language signals
 
 ## Firebase setup
 
@@ -32,7 +33,36 @@ For Flask, copy `backend/.env.example` to `backend/.env`, set the same project I
 
 The app intentionally renders a setup screen when the frontend Firebase values are missing, plus a read-only preview at `/preview`. Preview mode never calls private APIs, creates records, or uses sample scans.
 
-Telephony and scam-language analysis remain unavailable. The private local model is enabled for research only; the dataset and generated model are not distributed in source control.
+Firestore access is configured in [`firestore.rules`](firestore.rules): signed-in
+users can read only their own scan metadata, while the Flask backend is the sole
+writer for derived results. Deploy the rules with the Firebase CLI as described
+in [`FIRESTORE_SECURITY.md`](FIRESTORE_SECURITY.md). Production container and
+HTTPS/CORS guidance is in [`DEPLOYMENT.md`](DEPLOYMENT.md); service-account
+credentials remain outside the repository.
+
+Telephony remains unavailable. Scam-language analysis is now available as a local,
+rule-based heuristic when the user supplies a transcript and explicit consent.
+The private local voice model is enabled for research only; the dataset and
+generated model are not distributed in source control.
+
+## Consented transcript scam-language analysis
+
+On the upload panel, a user may paste an optional transcript and separately
+confirm consent for transcript review. The backend analyzes the text locally in
+memory using five transparent categories:
+
+- `financial_request`
+- `credential_request`
+- `urgency_or_threat`
+- `impersonation`
+- `remote_access_request`
+
+The transcript is bounded to 12,000 characters. Raw transcript text is not stored
+in Firestore, returned in scan history, or logged. The result stores only the
+heuristic status, score, categories, and explanation. The voice signal and
+scam-language signal are displayed separately and are never combined into an
+automatic fraud decision. A scam score is a category-match heuristic, not a
+probability.
 
 ## Phase 4 model baseline
 
@@ -113,6 +143,6 @@ npm run lint
 
 1. Audit dataset licenses/labels and evaluate on a separate verified speaker/generator-disjoint corpus.
 2. Move inference to a worker/job queue before production-scale use; evaluate a stronger model against this baseline.
-3. Add consented transcript analysis only after privacy review.
+3. Expand and validate the local transcript rules with a labeled, privacy-reviewed corpus.
 4. Configure Firestore TTL operationally for the `expires_at` retention field.
-5. Investigate authorized Twilio call flows; do not assume browser access to ordinary cellular calls.
+5. Investigate authorized Twilio call flows; do not assume browser call capture.

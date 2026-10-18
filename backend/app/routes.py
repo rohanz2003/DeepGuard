@@ -9,10 +9,40 @@ from flask import Blueprint, current_app, g, jsonify, request
 
 from .auth import token_required
 from .firebase import FirebaseUnavailable, utc_now
+from .transcript import (
+    TranscriptValidationError,
+    analyze_transcript,
+    unavailable_scam_result,
+)
 from .validation import AudioValidationError, validate_wav
 
 
 api = Blueprint("api", __name__, url_prefix="/api")
+
+_PUBLIC_SCAN_FIELDS = (
+    "id",
+    "filename",
+    "mime_type",
+    "size_bytes",
+    "duration_seconds",
+    "status",
+    "deepfake_status",
+    "scam_status",
+    "scam_score",
+    "scam_categories",
+    "scam_explanation",
+    "confidence",
+    "model_version",
+    "explanation",
+    "created_at",
+    "expires_at",
+)
+_SCAM_FIELDS = (
+    "scam_status",
+    "scam_score",
+    "scam_categories",
+    "scam_explanation",
+)
 
 
 def error(message: str, status: int = 400):
@@ -36,7 +66,51 @@ def repository():
     return current_app.extensions["firebase"].repository
 
 
-def _scan_payload(metadata, inference, scan_id: str, created_at: str, expires_at: str):
+def _public_scan(scan: dict) -> dict:
+    """Return the stable scan contract without raw-content fields.
+
+    Repositories may contain records written by an older version or by a test
+    adapter.  Shape every response at the HTTP boundary so POST, list, and
+    detail endpoints expose the same derived scam fields and never forward
+    transcript/audio content.
+    """
+
+    public = {key: scan[key] for key in _PUBLIC_SCAN_FIELDS if key in scan}
+    defaults = unavailable_scam_result()
+    public["scam_status"] = public.get("scam_status") or defaults["scam_status"]
+    public["scam_score"] = public.get("scam_score")
+    categories = public.get("scam_categories")
+    public["scam_categories"] = (
+        list(categories) if isinstance(categories, (list, tuple)) else []
+    )
+    public["scam_explanation"] = (
+        public.get("scam_explanation") or defaults["scam_explanation"]
+    )
+    return public
+
+
+def _scan_payload(
+    metadata,
+    inference,
+    scan_id: str,
+    created_at: str,
+    expires_at: str,
+    scam_result: dict | None = None,
+):
+    # Transcript analysis is deliberately kept outside the audio inference
+    # result.  This prevents the two independent signals from being combined.
+    scam = unavailable_scam_result()
+    scam.update(
+        {field: inference[field] for field in _SCAM_FIELDS if field in inference}
+    )
+    if scam_result is not None:
+        scam.update(
+            {
+                field: scam_result[field]
+                for field in _SCAM_FIELDS
+                if field in scam_result
+            }
+        )
     return {
         "id": scan_id,
         "filename": metadata.filename,
@@ -45,7 +119,7 @@ def _scan_payload(metadata, inference, scan_id: str, created_at: str, expires_at
         "duration_seconds": round(metadata.duration_seconds, 2),
         "status": inference["status"],
         "deepfake_status": inference["deepfake_status"],
-        "scam_status": inference["scam_status"],
+        **scam,
         "confidence": inference["confidence"],
         "model_version": inference["model_version"],
         "explanation": inference["explanation"],
@@ -103,7 +177,10 @@ def me():
 @token_required
 def list_scans():
     try:
-        scans = repository().list(g.current_user["id"], utc_now())
+        scans = [
+            _public_scan(scan)
+            for scan in repository().list(g.current_user["id"], utc_now())
+        ]
     except FirebaseUnavailable as exc:
         return storage_error(exc)
     except Exception as exc:
@@ -142,6 +219,16 @@ def create_scan():
         return error("Too many uploads. Please try again shortly.", 429)
     if request.form.get("consent") != "true":
         return error("Explicit consent is required before analyzing audio.")
+
+    transcript = request.form.get("transcript")
+    try:
+        scam_result = analyze_transcript(
+            transcript,
+            consented=(request.form.get("transcript_consent") == "true"),
+        )
+    except TranscriptValidationError as exc:
+        return error(str(exc))
+
     audio = request.files.get("audio")
     if audio is None:
         return error("Attach an audio file in the 'audio' field.")
@@ -165,6 +252,7 @@ def create_scan():
         str(uuid.uuid4()),
         created.isoformat(),
         expires.isoformat(),
+        scam_result,
     )
     try:
         stored = repository().create(g.current_user["id"], scan)
@@ -172,7 +260,7 @@ def create_scan():
         return storage_error(exc)
     except Exception as exc:
         return storage_error(exc)
-    return jsonify({"scan": stored}), 201
+    return jsonify({"scan": _public_scan(stored)}), 201
 
 
 @api.get("/scans/<scan_id>")
@@ -186,7 +274,7 @@ def get_scan(scan_id):
         return storage_error(exc)
     if scan is None:
         return error("Scan not found.", 404)
-    return jsonify({"scan": scan})
+    return jsonify({"scan": _public_scan(scan)})
 
 
 @api.delete("/scans/<scan_id>")

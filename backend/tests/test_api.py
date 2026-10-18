@@ -176,6 +176,10 @@ class ApiTestCase(unittest.TestCase):
         scan = response.get_json()["scan"]
         self.assertEqual(scan["status"], "unavailable")
         self.assertEqual(scan["deepfake_status"], "inconclusive")
+        self.assertEqual(scan["scam_status"], "unavailable")
+        self.assertIsNone(scan["scam_score"])
+        self.assertEqual(scan["scam_categories"], [])
+        self.assertIn("no transcript", scan["scam_explanation"].lower())
         self.assertIsNone(scan["confidence"])
         self.assertEqual(scan["model_version"], "not-configured")
         self.assertNotIn("audio", self.repository.items)
