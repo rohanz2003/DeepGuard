@@ -618,3 +618,41 @@ class FirebaseServices:
         except Exception as exc:
             self._failure = type(exc).__name__
             raise FirebaseUnavailable("Firebase Storage is unavailable.") from exc
+
+    def storage_readiness(self, bucket_name: str = "") -> dict:
+        """Report whether the configured temporary bucket is usable.
+
+        Firestore readiness alone is not enough for durable scan admission: the
+        API also needs a private Cloud Storage bucket for the short-lived WAV
+        handoff.  Keep this probe read-only and return only safe deployment
+        state, never provider error details.
+        """
+
+        configured_bucket = str(bucket_name or self.settings.get("FIREBASE_STORAGE_BUCKET", "")).strip()
+        if not configured_bucket:
+            return {
+                "status": "unavailable",
+                "configured": False,
+                "reason": "bucket-not-configured",
+            }
+        try:
+            bucket = self.storage_bucket(configured_bucket)
+            if not bucket.exists(timeout=10):
+                return {
+                    "status": "unavailable",
+                    "configured": True,
+                    "bucket": configured_bucket,
+                    "reason": "bucket-not-found-or-inaccessible",
+                }
+        except FirebaseUnavailable:
+            return {
+                "status": "unavailable",
+                "configured": True,
+                "bucket": configured_bucket,
+                "reason": "storage-unavailable",
+            }
+        return {
+            "status": "ready",
+            "configured": True,
+            "bucket": configured_bucket,
+        }

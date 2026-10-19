@@ -30,6 +30,10 @@ class FirebaseObjectStorage:
         self._bucket_name = str(bucket_name or "").strip()
 
     def _bucket(self):
+        if not self._bucket_name:
+            raise StorageUnavailable(
+                "Temporary Cloud Storage bucket is not configured."
+            )
         try:
             return self._firebase.storage_bucket(self._bucket_name or None)
         except Exception as exc:  # SDK/provider details stay out of responses.

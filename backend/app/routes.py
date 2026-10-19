@@ -61,8 +61,23 @@ def storage_error(exception: Exception):
     current_app.logger.warning(
         "Scan storage operation failed (%s)", type(exception).__name__
     )
+    if isinstance(exception, StorageUnavailable) and "not configured" in str(exception).lower():
+        message = (
+            "Temporary Cloud Storage is not configured. Create or enable a private "
+            "Firebase Storage bucket and set FIREBASE_STORAGE_BUCKET, then restart the backend."
+        )
+    elif isinstance(exception, StorageUnavailable):
+        message = (
+            "Temporary Cloud Storage is unavailable. Confirm the Firebase Storage "
+            "bucket exists and the backend service account can access it, then try again."
+        )
+    else:
+        message = (
+            "Firestore storage is unavailable. Enable Cloud Firestore for this Firebase project, "
+            "then try again."
+        )
     return error(
-        "Firestore storage is unavailable. Enable Cloud Firestore and temporary Cloud Storage for this Firebase project, then try again.",
+        message,
         503,
     )
 
@@ -170,6 +185,13 @@ def health():
         if injected_ready
         else services.readiness()
     )
+    temporary_storage = (
+        {"status": "ready", "configured": True, "injected": True}
+        if injected_ready
+        else services.storage_readiness(
+            current_app.config.get("FIREBASE_STORAGE_BUCKET", "")
+        )
+    )
     inference = current_app.extensions["inference"]
     model_status = (
         inference.readiness()
@@ -184,6 +206,7 @@ def health():
             "status": "ok",
             "service": "deepguard-api",
             "firebase": firebase_status,
+            "temporary_storage": temporary_storage,
             "model": model_status,
             "message": (
                 "API is ready, but Firestore storage is unavailable."
