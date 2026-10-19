@@ -7,14 +7,10 @@ hosting provider.
 
 ## Deployment shape
 
-- **Backend API:** `backend/Dockerfile` builds the Flask WSGI container. The
-  root `Procfile` uses the same Gunicorn configuration for a process-based
-  host. The container listens on `PORT` (default `8080`) and exposes the
-  existing `/api/health` readiness endpoint.
-- **Durable worker:** run the same image/artifact as a separate process with
-  `python worker.py` from `/app/backend` (the root Procfile entry is
-  `worker: python backend/worker.py`). The worker is intentionally separate
-  from Gunicorn and polls Firestore for leased jobs.
+- **Backend:** `backend/Dockerfile` builds a WSGI container. The root
+  `Procfile` uses the same Gunicorn configuration for a process-based host.
+  The container listens on `PORT` (default `8080`) and exposes the existing
+  `/api/health` readiness endpoint.
 - **Frontend:** `frontend/Dockerfile` builds with `npm ci` from the committed
   lockfile and serves `dist/` with Nginx. `frontend/nginx.conf` includes the
   client-side route fallback and `/healthz` liveness response.
@@ -29,13 +25,11 @@ context and must be mounted or supplied by the runtime. The image defaults to
 `ENVIRONMENT=production` and an empty allowlist for `CORS_ORIGINS`, so a
 deployment must explicitly provide its public frontend origin.
 
-Scan admission is durable: Firestore owns the owner-scoped metadata/job record,
-and the validated WAV is held only in a private, short-lived Cloud Storage
-object. The worker claims pending jobs with a Firestore transaction lease and
-recovers processing jobs after `SCAN_LEASE_SECONDS`. The lease token guards
-completion/failure writes against stale workers. The worker deletes the object
-after terminal completion/failure and retains a cleanup marker if deletion
-needs another pass.
+Scan inference is currently a bounded in-process worker. Each Gunicorn process
+has its own manager, and queued in-memory audio is lost if that process exits.
+This lifecycle is suitable for the current bounded MVP, but a durable shared
+queue and retry store are required before relying on processing across restarts
+or multiple independently scaled instances.
 
 ## Backend process and container
 
@@ -53,23 +47,6 @@ worker and timeout defaults can be adjusted without changing application code:
 | `GUNICORN_KEEPALIVE` | `5` | Keep-alive seconds |
 | `GUNICORN_LOG_LEVEL` | `info` | Gunicorn log level |
 
-Durable scan queue settings are shared by the API and worker process:
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `FIREBASE_STORAGE_BUCKET` | empty | Required production Cloud Storage bucket name; never a credential |
-| `SCAN_RAW_RETENTION_SECONDS` | `3600` | Short lifetime/cleanup deadline for temporary WAV objects |
-| `SCAN_LEASE_SECONDS` | `300` | Firestore processing lease before another worker may recover it |
-| `SCAN_POLL_INTERVAL_SECONDS` | `5` | Worker wait between empty queue polls |
-| `SCAN_WORKER_COMMAND` | `python -m worker` | Documented process command; the host should run it separately |
-| `RETENTION_DAYS` | `30` | Firestore scan metadata retention; configure Firestore TTL too |
-| `SCAN_MAX_ATTEMPTS` | `2` | Maximum attempts for the dedicated transient inference error |
-
-The API and worker must use the same Firebase project, bucket, model settings,
-lease duration, and retry limit. Scale the worker process independently from
-the API; each worker uses Firestore transactions rather than a process-local
-queue.
-
 Build and run the portable image from the repository root:
 
 ```sh
@@ -79,14 +56,6 @@ docker run --rm -p 8080:8080 \
   --mount type=bind,src=/secure/deepguard/firebase-service-account.json,dst=/run/secrets/firebase-service-account.json,readonly \
   -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json \
   deepguard-backend:production
-
-# Run the durable worker as a separate container/process, with the same
-# environment and credential mount. It does not expose a public port.
-docker run --rm \
-  --env-file /secure/deepguard/backend-production.env \
-  --mount type=bind,src=/secure/deepguard/firebase-service-account.json,dst=/run/secrets/firebase-service-account.json,readonly \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json \
-  --entrypoint python deepguard-backend:production worker.py
 ```
 
 For a process-based host, install the pinned requirements and use the checked-in
@@ -143,20 +112,15 @@ Required or production-specific backend settings:
 ```dotenv
 ENVIRONMENT=production
 FIREBASE_PROJECT_ID=your-firebase-project-id
-FIREBASE_STORAGE_BUCKET=your-project.appspot.com
 GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json
 USE_FIREBASE_EMULATORS=false
 CORS_ORIGINS=https://frontend.example.test
-SCAN_RAW_RETENTION_SECONDS=3600
-SCAN_LEASE_SECONDS=300
-SCAN_POLL_INTERVAL_SECONDS=5
-RETENTION_DAYS=30
 ```
 
-Keep `FIREBASE_AUTH_EMULATOR_HOST`, `FIRESTORE_EMULATOR_HOST`, and
-`STORAGE_EMULATOR_HOST` unset in production. The application rejects emulator settings when
-`ENVIRONMENT=production`. Set the upload, retention, rate-limit, queue, and
-model variables from `backend/.env.example` as needed for the deployment; the
+Keep `FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` unset in
+production. The application rejects emulator settings when
+`ENVIRONMENT=production`. Set the upload, retention, rate-limit, and model
+variables from `backend/.env.example` as needed for the deployment; the
 existing validation bounds still apply. If the runtime provides an
 appropriate application identity, `GOOGLE_APPLICATION_CREDENTIALS` may be
 left empty and Application Default Credentials can be used instead.
@@ -175,36 +139,6 @@ VITE_USE_FIREBASE_EMULATORS=false
 Only the frontend's public Firebase web configuration belongs in these build
 variables. Do not put Firebase Admin credentials, API tokens, or service
 account JSON in the frontend environment.
-
-## Firestore and Cloud Storage queue prerequisites
-
-Create the Firestore database and the Firebase/Google Cloud Storage bucket in
-the same project before starting either process. Set the exact bucket name in
-`FIREBASE_STORAGE_BUCKET` for both the API and worker (for example,
-`your-project.appspot.com`). A bucket is required even when the Firestore
-health probe is healthy because scan admission uploads the validated WAV before
-returning `202`.
-
-Keep the bucket private: the application uses the Firebase Admin SDK and never
-creates a public URL or grants object-level public access. Configure deployment
-IAM so the API identity can create/delete temporary objects and the worker
-identity can read/delete them and read/write the Firestore scan collection.
-If the API and worker use separate identities, grant the same least-privilege
-Storage permissions to each identity rather than embedding a key in the
-repository or container.
-
-Cloud Storage encryption-at-rest and any customer-managed encryption keys must
-be configured by the deployment in the bucket/project. The application does
-not create or select encryption keys and does not treat `FIREBASE_STORAGE_BUCKET`
-as a secret. Configure bucket lifecycle rules using the object metadata
-(`deepguard-temporary=true`, `deepguard-cleanup=required`, and
-`deepguard-expires-at`) and the object's `customTime` as a backstop for
-objects left by an interrupted worker. The worker's normal terminal path
-deletes the object immediately.
-
-Configure Firestore TTL on the scan document `expires_at` field for eventual
-metadata cleanup. TTL is independent of the short raw-object lifetime; it must
-not be used as the only Cloud Storage cleanup mechanism.
 
 ## Firebase service-account handling
 

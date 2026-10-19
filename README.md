@@ -8,8 +8,7 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 
 - React + Vite responsive security-monitoring dashboard
 - Firebase Authentication in the React client with Flask ID-token verification
-- Firestore metadata/job storage with owner-scoped transactional leases
-- Private short-lived Cloud Storage objects for durable scan handoff
+- Firestore metadata storage; raw audio is not persisted
 - WAV extension, MIME, signature, size, and duration validation
 - Protected scan history with per-user authorization and deletion
 - Light/dark theme, collapsible sidebar, and dashboard-tab preferences
@@ -19,22 +18,21 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 - Optional consented local transcript analysis with separate scam-language signals
 
 `POST /api/scans` validates the WAV and optional transcript synchronously,
-uploads the WAV to a private short-lived Cloud Storage object, writes only
-owner-scoped metadata/job fields to Firestore, and returns HTTP `202` with a
-top-level `status: "pending"`. A separate `backend/worker.py` process claims
-the Firestore record with a transaction lease, recovers expired leases, and
-performs voice inference through `processing` to `completed` or `failed`.
-Raw audio is deleted after terminal processing (with a cleanup marker and
-bucket lifecycle backstop); transcript text is never stored or returned. The
-worker retries only the dedicated transient inference exception and records
-safe attempt/error fields. The dashboard shows queued/processing/failed states
-and polls the scan detail endpoint until a terminal state is reached.
+stores only metadata plus derived scam fields, and returns HTTP `202` with a
+top-level `status: "pending"`. A bounded in-process `ThreadPoolExecutor`
+worker performs voice inference and updates the owner-scoped record through
+`processing` to `completed` or `failed`. Raw audio remains in memory only for
+the worker handoff and is never stored or returned; transcript text is also
+never stored or returned. The worker supports bounded retries for one
+dedicated transient inference exception and records safe attempt/error fields.
+The dashboard shows queued/processing/failed states and polls the scan detail
+endpoint until a terminal state is reached.
+This is not a durable cross-process queue: queued work is lost if a process
+exits, and each process has its own bounded manager.
 
 ## Firebase setup
 
-Create a Firebase project, enable Email/Password authentication, create a web
-app, enable Firestore, and create a private Cloud Storage bucket. Copy the web
-configuration to `frontend/.env`:
+Create a Firebase project, enable Email/Password authentication, create a web app, and enable Firestore. Copy the web configuration to `frontend/.env`:
 
 ```dotenv
 VITE_FIREBASE_API_KEY=your-web-api-key
@@ -44,13 +42,7 @@ VITE_FIREBASE_APP_ID=your-web-app-id
 VITE_API_URL=/api
 ```
 
-For Flask, copy `backend/.env.example` to `backend/.env`, set the same project
-ID and a private `FIREBASE_STORAGE_BUCKET`, and point
-`GOOGLE_APPLICATION_CREDENTIALS` at a service-account JSON file stored outside
-this workspace. Never commit that file. Configure Cloud Storage encryption at
-rest/IAM and bucket lifecycle rules in the deployment. For local emulator work,
-set the Authentication, Firestore, and Storage emulator host variables with
-`USE_FIREBASE_EMULATORS=true`; production mode rejects emulator settings.
+For Flask, copy `backend/.env.example` to `backend/.env`, set the same project ID, and point `GOOGLE_APPLICATION_CREDENTIALS` at a service-account JSON file stored outside this workspace. Never commit that file. For local emulator work, set both emulator host variables and `USE_FIREBASE_EMULATORS=true`; production mode rejects emulator settings.
 
 The app intentionally renders a setup screen when the frontend Firebase values are missing, plus a read-only preview at `/preview`. Preview mode never calls private APIs, creates records, or uses sample scans.
 
@@ -129,15 +121,7 @@ Copy-Item .env.example .env # then set Firebase Admin credentials
 python run.py
 ```
 
-In a second terminal, start the durable worker from the same `backend/`
-directory:
-
-```powershell
-python worker.py
-```
-
-The API listens on `http://localhost:5000`. Health check:
-`http://localhost:5000/api/health`.
+The API listens on `http://localhost:5000`. Health check: `http://localhost:5000/api/health`.
 
 ## Run the frontend (PowerShell)
 
@@ -171,7 +155,7 @@ npm run lint
 ## Next implementation slice
 
 1. Audit dataset licenses/labels and evaluate on a separate verified speaker/generator-disjoint corpus.
-2. Operate and tune the durable Firestore worker/bucket lifecycle; evaluate a stronger model against this baseline.
+2. Replace the bounded in-process worker with a durable shared job queue before production-scale use; evaluate a stronger model against this baseline.
 3. Expand and validate the local transcript rules with a labeled, privacy-reviewed corpus.
 4. Configure Firestore TTL operationally for the `expires_at` retention field.
 5. Investigate authorized Twilio call flows; do not assume browser call capture.

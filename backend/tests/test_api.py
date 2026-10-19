@@ -115,7 +115,6 @@ class ApiTestCase(unittest.TestCase):
         body = response.get_json()
         self.assertEqual(body["model"]["status"], "unavailable")
         self.assertEqual(body["firebase"]["status"], "ready")
-        self.assertEqual(body["temporary_storage"]["status"], "ready")
 
     def test_firestore_storage_failures_are_explained_without_provider_details(self):
         class FailingRepository(MemoryRepository):

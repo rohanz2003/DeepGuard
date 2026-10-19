@@ -111,14 +111,14 @@ Implemented in `backend/app/`:
 - Per-process rate limiting and bounded in-memory multipart upload handling.
 - Security headers, CORS, no-store API responses, and safe JSON errors.
 - WAV container/signature/PCM/channel/sample-rate/sample-width/duration checks.
-- Private short-lived Cloud Storage audio handoff to the separate durable worker;
-  raw audio is not included in persisted Firestore metadata or diagnostic logs.
+- In-memory audio handoff to inference; raw audio is not included in persisted scan
+  payloads or diagnostic logs.
 - 30-day scan metadata expiry field and expiry-on-read behavior.
 - Safe JSON model artifact loader with strict feature-contract validation.
-- Firestore-backed scan job records with transactional leases/recovery; `POST
-  /api/scans` admits a validated scan as `pending`, then the separate worker
-  records `processing` and `completed` or `failed` with safe retry/error
-  metadata. Temporary raw WAV objects are deleted after terminal processing.
+- Bounded in-process `ThreadPoolExecutor` scan worker for local research
+  inference; `POST /api/scans` admits a validated scan as `pending`, then the
+  worker records `processing` and `completed` or `failed` with safe retry/error
+  metadata. Raw audio is handed off in memory and released after the worker.
 - Consent-gated local transcript analyzer with fixed categories:
   `financial_request`, `credential_request`, `urgency_or_threat`,
   `impersonation`, and `remote_access_request`.
@@ -137,12 +137,9 @@ Important backend paths:
 - `backend/app/inference.py`
 - `backend/app/routes.py`
 - `backend/app/jobs.py`
-- `backend/app/storage.py`
-- `backend/worker.py`
 - `backend/app/request.py`
 - `backend/app/rate_limit.py`
 - `backend/tests/test_api.py`
-- `backend/tests/test_durable_scan_queue.py`
 - `backend/tests/test_model_pipeline.py`
 - `backend/tests/test_firebase_readiness.py`
 - `backend/app/transcript.py`
@@ -395,11 +392,11 @@ no browser credentials or private tokens are recorded in this memory file.
 - Live call monitoring/Twilio streaming is unavailable and requires consent,
   legal review, and an authorized supported call path.
 - Web upload accepts WAV only; MP3 support is offline dataset preparation only.
-- Scan inference is asynchronous behind the durable Firestore queue and a
-  separate worker process. Firestore transaction leases prevent duplicate
-  claims and recover processing records after lease expiry. Temporary raw WAV
-  objects live in private Cloud Storage with a cleanup marker and lifecycle
-  backstop.
+- Scan inference is asynchronous behind a bounded, process-local
+  `ThreadPoolExecutor`. This is not a durable cross-process queue: queued jobs
+  are lost on process exit and each Gunicorn process has its own manager.
+  A durable shared queue is required before larger or latency-sensitive
+  deployment.
 - Rate limiting is process-local; multi-worker deployments need a shared gateway.
 - Firestore TTL for `expires_at` still needs operational configuration.
 - Firebase credentials, service-account JSON, raw audio, dataset files, manifests,
@@ -422,10 +419,12 @@ no browser credentials or private tokens are recorded in this memory file.
    and perform calibration/threshold analysis without using the holdout for tuning.
 3. Compare this baseline with a stronger evaluated speech model while retaining
    the same provenance and privacy controls.
-4. Operate the separate durable worker and configure the private Storage bucket,
-   IAM/encryption-at-rest, Storage lifecycle, and Firestore TTL for `expires_at`.
-5. Validate and expand the local transcript rules using a labeled,
+4. Replace the bounded in-process worker with a durable shared queue before
+   production-scale use; the API now exposes pending/processing/completed/failed
+   lifecycle states.
+5. Configure Firestore TTL operationally for `expires_at`.
+6. Validate and expand the local transcript rules using a labeled,
    privacy-reviewed corpus; do not send transcript text to an external service
    without a separate consent/data-handling decision.
-6. Investigate authorized Twilio-supported flows; do not add arbitrary browser
+7. Investigate authorized Twilio-supported flows; do not add arbitrary browser
    cellular-call capture or automatic call blocking.
