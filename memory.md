@@ -1,5 +1,8 @@
 # Project Memory
 
+Last updated: **October 20, 2026**. Working tree is on branch `main`; the
+current feature work is uncommitted.
+
 ## 1. Project and goal
 
 Project: **AI Powered Deepfake Voice and Scam Call Detector for Secure Communication**.
@@ -31,8 +34,12 @@ The original project requirements are in:
 - Backend: Flask application factory and modular API modules.
 - Backend auth: Firebase Admin SDK verifies Firebase ID tokens and fails closed.
 - Database: Firestore, selected instead of MongoDB or SQLite.
-- Storage: scan metadata only under `users/{firebase_uid}/scans/{scan_id}`;
-  uploaded audio is never persisted.
+- Storage: scan metadata under `users/{firebase_uid}/scans/{scan_id}`;
+  uploaded audio is never persisted by default. If the user explicitly opts in
+  to 30-day playback, the original WAV or MP3 bytes are stored in optional
+  MongoDB GridFS and only retention metadata plus a private GridFS pointer are
+  kept in Firestore. MP3 inference bytes are normalized WAV bytes and are not
+  stored as scan metadata.
 - Firestore rules: authenticated clients may read only their own scan metadata;
   client writes are denied and the Flask Firebase Admin backend is the sole
   writer. See `firestore.rules` and `FIRESTORE_SECURITY.md`.
@@ -61,7 +68,13 @@ Implemented in `frontend/`:
 - Overview, scan history, scan details, settings, and planned live-calls screen.
 - Light/dark theme and sidebar collapse preferences.
 - Accessible loading, empty, error, unavailable, success, and delete states.
-- WAV upload with extension/MIME/size checks and required consent checkbox.
+- WAV/MP3 upload with extension/MIME/size checks and required consent checkbox;
+  MP3 is decoded to bounded mono 16 kHz signed-16-bit PCM WAV for inference.
+- Browser-only audio previews for WAV and MP3 using object URLs; preview bytes
+  do not enter API or scan metadata.
+- Optional 30-day playback checkbox with owner-scoped playback result state.
+- Playback requests use the authenticated Axios client, retry transient network
+  failures up to three times, and expose a manual `Retry playback` action.
 - Results display that distinguishes:
   - lower signal,
   - needs review,
@@ -93,10 +106,12 @@ Important frontend paths:
 - `frontend/src/styles.css`
 - `frontend/src/App.test.jsx`
 - `frontend/src/components/ResultCard.test.jsx`
+- `frontend/src/components/UploadPanel.test.jsx`
+- `frontend/src/utils/scan.test.js`
 
-The web upload contract remains **uncompressed PCM WAV only**, 1 second to 5
-minutes, maximum 25 MiB. Offline MP3 preparation does not enable MP3 uploads in
-the browser.
+The web upload contract accepts **PCM WAV and MP3**, 1 second to 5 minutes,
+maximum 25 MiB original upload. MP3 is normalized in memory for inference; if
+playback retention is selected, the original MP3 bytes are stored in GridFS.
 
 ### Backend
 
@@ -110,9 +125,20 @@ Implemented in `backend/app/`:
 - User-scoped scan create/list/get/delete endpoints.
 - Per-process rate limiting and bounded in-memory multipart upload handling.
 - Security headers, CORS, no-store API responses, and safe JSON errors.
-- WAV container/signature/PCM/channel/sample-rate/sample-width/duration checks.
+- WAV container/signature/PCM/channel/sample-rate/sample-width/duration checks;
+  bounded MP3 decoding through system FFmpeg or the pinned `imageio-ffmpeg`
+  fallback, and normalized PCM-WAV handoff.
 - In-memory audio handoff to inference; raw audio is not included in persisted scan
-  payloads or diagnostic logs.
+  payloads or diagnostic logs unless explicit playback retention is requested.
+- Optional lazy MongoDB GridFS audio store; ordinary uploads do not connect to
+  MongoDB. Retained audio is owner-scoped through `GET /api/scans/<id>/audio`
+  and is deleted when its scan is deleted or retention expires on access.
+- Retained playback supports `Range` requests, preserves the original upload
+  MIME type, and returns the original WAV/MP3 bytes only to the authenticated
+  owner.
+- Multipart upload limits allow the five-field frontend form (`audio`, consent,
+  transcript, transcript consent, and retention preference) with a small margin;
+  `MAX_FORM_PARTS` is set to `8` to avoid the earlier five-part HTTP 400.
 - 30-day scan metadata expiry field and expiry-on-read behavior.
 - Safe JSON model artifact loader with strict feature-contract validation.
 - Bounded in-process `ThreadPoolExecutor` scan worker for local research
@@ -133,6 +159,7 @@ Important backend paths:
 - `backend/app/config.py`
 - `backend/app/auth.py`
 - `backend/app/firebase.py`
+- `backend/app/audio_store.py`
 - `backend/app/validation.py`
 - `backend/app/inference.py`
 - `backend/app/routes.py`
@@ -145,6 +172,8 @@ Important backend paths:
 - `backend/app/transcript.py`
 - `backend/tests/test_transcript.py`
 - `backend/tests/test_scan_jobs.py`
+- `backend/tests/test_audio_retention.py`
+- `backend/tests/test_mp3_upload.py`
 - `firestore.rules`
 - `firebase.json`
 - `FIRESTORE_SECURITY.md`
@@ -247,8 +276,12 @@ Protected with Firebase Bearer ID token:
 - `GET /api/auth/me`
 - `GET /api/scans`
 - `POST /api/scans` with multipart `audio` and `consent=true`; optional
-  `transcript` plus `transcript_consent=true` for local scam-language review.
+  `transcript` plus `transcript_consent=true` for local scam-language review,
+  and `retain_audio=true` for optional 30-day playback. `audio` accepts PCM WAV
+  or MP3; MP3 is decoded to normalized WAV only for inference.
 - `GET /api/scans/<scan_id>`
+- `GET /api/scans/<scan_id>/audio` for owner-authenticated retained playback;
+  supports byte ranges and returns the original retained MIME type.
 - `DELETE /api/scans/<scan_id>`
 
 `POST /api/scans` returns HTTP `202` with top-level `status: "pending"`; the
@@ -299,11 +332,12 @@ Open:
 http://localhost:5173
 ```
 
-Create/sign into a Firebase Email/Password account, then upload a consented
-PCM WAV recording. Scan history requires Cloud Firestore to exist in the same
-Firebase project and the Firestore API to be enabled. If the backend process is
-already running after a configuration or code change, stop it with `Ctrl+C` and
-restart it.
+Create/sign into a Firebase Email/Password account, then upload a consented WAV
+or MP3 recording. Scan history requires Cloud Firestore to exist in the same
+Firebase project and the Firestore API to be enabled. MP3 support requires the
+backend requirements, including `imageio-ffmpeg`, to be installed. If the
+backend process is already running after a configuration or code change, stop it
+with `Ctrl+C` and restart it.
 
 ## 7. Reproduction and verification evidence
 
@@ -328,9 +362,20 @@ Working folder: `backend/`.
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Result: **36 passed**. The async scan tests cover pending admission, explicit
+Result on October 20, 2026: **50 passed**. This includes the async scan tests,
+audio-retention tests, and MP3 upload tests. Coverage includes pending admission,
 processing/completed and failed worker transitions, bounded transient retry,
-raw-content privacy, duplicate suppression, and owner isolation.
+raw-content privacy, duplicate suppression, owner isolation, MP3 normalization,
+invalid/oversize/duration-bounded MP3 rejection, original MP3 retention bytes,
+and WAV regression.
+
+Focused MP3 check:
+
+```powershell
+python -m unittest discover -s tests -p "test_mp3_upload.py" -v
+```
+
+Result: **8 passed**.
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q app tests ../ai_models
@@ -344,12 +389,15 @@ Both passed; no broken Python requirements were reported.
 Working folder: `frontend/`.
 
 ```powershell
-npm test
+npm test -- --run
 npm run build
 npm run lint
 ```
 
-Results: **26 frontend tests passed**, production build passed, and lint passed.
+Results on October 20, 2026: **36 frontend tests passed**, production build
+passed, and lint passed. The new frontend coverage includes MP3 selection and
+preview, WAV/MP3 upload labels, playback retry after transient network failure,
+and manual playback retry.
 React Router future-flag notices may appear; they are non-failing warnings.
 
 The transcript persistence regression test submits a consented transcript, then
@@ -360,6 +408,29 @@ refresh-race test verifies that a stale list response cannot replace fresh uploa
 scam metadata. The async frontend tests verify queued/processing/failed display,
 polling, terminal polling stop, scam metadata preservation, and raw transcript
 suppression.
+
+### MP3 end-to-end smoke check
+
+A real 1.2-second MP3 was generated with the bundled `imageio-ffmpeg` executable
+and submitted through a Flask test app using the current validator. Observed:
+
+- upload response: HTTP `202`;
+- public metadata: `filename=smoke.mp3`, `mime_type=audio/mpeg`;
+- inference received a valid RIFF/WAV payload after normalization;
+- the original MP3 bytes remained available separately for the retention boundary.
+
+This smoke check used an injected local repository/inference service and made no
+cloud writes. It did not replace the pending signed-in browser smoke test.
+
+### Local service checks
+
+After restarting both development services, the observed responses were:
+
+- `http://127.0.0.1:5000/api/health`: HTTP `200`;
+- `http://127.0.0.1:5173/`: HTTP `200`.
+
+The current local backend process uses the updated MP3 validator; the frontend
+dev server serves the updated WAV/MP3 upload UI.
 
 ### Model/API smoke check
 
@@ -391,7 +462,13 @@ no browser credentials or private tokens are recorded in this memory file.
   calibrated probability; its rules require further labeled validation.
 - Live call monitoring/Twilio streaming is unavailable and requires consent,
   legal review, and an authorized supported call path.
-- Web upload accepts WAV only; MP3 support is offline dataset preparation only.
+- Web upload accepts WAV and MP3; MP3 decoding requires the local FFmpeg binary
+  supplied by `imageio-ffmpeg` when a system `ffmpeg` is unavailable.
+- A complete signed-in browser smoke test for WAV/MP3 upload, refresh, retained
+  playback, expiration, deletion, and cross-user isolation is still pending.
+- MP3 retention and playback are covered with injected stores plus a local
+  generated-MP3 validator smoke test; a fresh production-like retained MP3 flow
+  still needs to be exercised through the browser against the configured services.
 - Scan inference is asynchronous behind a bounded, process-local
   `ThreadPoolExecutor`. This is not a durable cross-process queue: queued jobs
   are lost on process exit and each Gunicorn process has its own manager.
@@ -413,18 +490,24 @@ no browser credentials or private tokens are recorded in this memory file.
 
 ## 9. Next concrete steps
 
-1. Audit the dataset source, licenses, labels, speaker identities, and generator
+1. Review and commit the current uncommitted audio-retention, playback-retry,
+   MP3-support, and documentation changes after checking the final diff. Do not
+   commit credentials or the unrelated untracked `.vscode/` folder.
+2. Run a signed-in browser smoke test covering WAV and MP3 upload, optional
+   retention, refresh/read-back, playback, expiration, deletion, and owner
+   isolation.
+3. Audit the dataset source, licenses, labels, speaker identities, and generator
    identities; preserve that audit outside this public memory file if sensitive.
-2. Evaluate on a separately sourced, verified speaker/generator-disjoint corpus
+4. Evaluate on a separately sourced, verified speaker/generator-disjoint corpus
    and perform calibration/threshold analysis without using the holdout for tuning.
-3. Compare this baseline with a stronger evaluated speech model while retaining
+5. Compare this baseline with a stronger evaluated speech model while retaining
    the same provenance and privacy controls.
-4. Replace the bounded in-process worker with a durable shared queue before
+6. Replace the bounded in-process worker with a durable shared queue before
    production-scale use; the API now exposes pending/processing/completed/failed
    lifecycle states.
-5. Configure Firestore TTL operationally for `expires_at`.
-6. Validate and expand the local transcript rules using a labeled,
+7. Configure Firestore TTL operationally for `expires_at`.
+8. Validate and expand the local transcript rules using a labeled,
    privacy-reviewed corpus; do not send transcript text to an external service
    without a separate consent/data-handling decision.
-7. Investigate authorized Twilio-supported flows; do not add arbitrary browser
+9. Investigate authorized Twilio-supported flows; do not add arbitrary browser
    cellular-call capture or automatic call blocking.

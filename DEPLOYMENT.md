@@ -115,6 +115,10 @@ FIREBASE_PROJECT_ID=your-firebase-project-id
 GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/firebase-service-account.json
 USE_FIREBASE_EMULATORS=false
 CORS_ORIGINS=https://frontend.example.test
+# Optional: only needed when an upload explicitly uses retain_audio=true.
+MONGODB_URI=mongodb+srv://user:password@example.mongodb.net/?retryWrites=true
+MONGODB_DATABASE=deepguard
+MONGODB_GRIDFS_BUCKET=audio
 ```
 
 Keep `FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` unset in
@@ -124,6 +128,16 @@ variables from `backend/.env.example` as needed for the deployment; the
 existing validation bounds still apply. If the runtime provides an
 appropriate application identity, `GOOGLE_APPLICATION_CREDENTIALS` may be
 left empty and Application Default Credentials can be used instead.
+
+MongoDB is an optional audio-retention dependency. Keep `MONGODB_URI` empty
+when retained audio is not needed; ordinary uploads do not connect to MongoDB.
+When `retain_audio=true` is admitted, the backend stores bytes in the named
+GridFS bucket and stores only a pointer plus retention metadata in Firestore.
+Use a secret-management facility for the URI and grant the application only
+the MongoDB permissions required for the configured database and GridFS
+bucket. The API exposes retained audio only through the owner-scoped
+`/api/scans/{scan_id}/audio` endpoint and deletes the GridFS object when the
+scan is deleted.
 
 Frontend build-time settings are:
 

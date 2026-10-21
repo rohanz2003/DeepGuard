@@ -4,3 +4,5 @@ firebase-admin==6.6.0
 python-dotenv==1.0.1
 numpy==2.5.4
 gunicorn==23.0.0
+pymongo==4.15.5
+imageio-ffmpeg==0.6.0

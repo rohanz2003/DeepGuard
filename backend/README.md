@@ -23,11 +23,31 @@ database produces HTTP 503 for scan routes rather than silently losing data.
 
 The API stores only user-scoped scan metadata in Firestore under
 `users/{firebase_uid}/scans/{scan_id}`. Raw audio is read into bounded memory
-for synchronous PCM/WAV validation and is handed to the bounded worker only;
-it is never stored or logged. `expires_at` is written
+for synchronous WAV validation or bounded MP3 decoding and is handed to the
+bounded worker only; it is never stored or logged unless the upload explicitly
+includes `retain_audio=true`. Retained bytes are stored in MongoDB GridFS, while
+Firestore receives only the private `audio_storage_id` pointer and the safe
+retention fields `audio_retained`, `audio_retention_days`, `audio_expires_at`,
+and `audio_storage`. `audio_storage_id` is never returned by the API. Set
+`MONGODB_URI`, `MONGODB_DATABASE`, and `MONGODB_GRIDFS_BUCKET` before accepting
+retained uploads; missing or unavailable MongoDB produces a clear HTTP 503 only
+for a retention request. Normal uploads do not require MongoDB. `expires_at` is written
 for a 30-day default retention period and expired documents are removed when
 read. A separate Firestore TTL policy should be configured operationally for
 eventual cleanup.
+
+Retained recordings are available to their owner at
+`GET /api/scans/{scan_id}/audio`. The endpoint supports HTTP byte ranges for
+audio players and returns no audio for another user's scan. Deleting a scan
+deletes its retained GridFS object before removing the Firestore metadata.
+
+Uploads may be PCM WAV or MP3. WAV files keep the strict PCM/container checks.
+MP3 files are decoded with the local FFmpeg binary supplied by `imageio-ffmpeg`
+when a system `ffmpeg` executable is unavailable. Decoded audio must be between
+1 and 300 seconds and is normalized to mono, 16 kHz, signed-16-bit PCM WAV for
+inference. If retention is requested, GridFS receives the original upload
+bytes and MIME type so MP3 playback remains MP3; the normalized inference WAV
+is never included in API responses or Firestore.
 
 ## Optional model configuration
 
@@ -64,7 +84,7 @@ separate from `deepfake_status` and `confidence`; the API never combines the two
 When no transcript is supplied, scam status is `unavailable`.
 
 `POST /api/scans` returns HTTP `202` with a top-level `status: "pending"` after
-synchronous WAV/transcript validation and metadata admission. The record then
+synchronous WAV/MP3/transcript validation and metadata admission. The record then
 transitions through `pending` → `processing` → `completed` or `failed`.
 `updated_at`, `attempt`, `retry_count`, and `max_attempts` are safe lifecycle
 fields; failed records expose only a bounded `error_code` and safe

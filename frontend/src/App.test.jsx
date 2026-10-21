@@ -51,7 +51,7 @@ describe("frontend safety paths", () => {
   it("requires consent before upload and marks feedback as an alert", async () => {
     render(<UploadPanel onUploaded={vi.fn()} />);
     const file = new File(["RIFF"], "voice.wav", { type: "audio/wav" });
-    const input = screen.getByLabelText("WAV audio file");
+    const input = screen.getByLabelText("WAV or MP3 audio file");
     fireEvent.change(input, { target: { files: [file] } });
     await waitFor(() => expect(screen.getByText(/Ready to validate/)).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
@@ -62,7 +62,7 @@ describe("frontend safety paths", () => {
     const upload = vi.spyOn(apiService, "uploadScan").mockResolvedValue({ data: { scan: { id: "transcript-scan", status: "unavailable" } } });
     render(<UploadPanel onUploaded={vi.fn()} />);
     expect(screen.queryByLabelText(/consent to analyze this transcript/i)).not.toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("WAV audio file"), {
+    fireEvent.change(screen.getByLabelText("WAV or MP3 audio file"), {
       target: { files: [new File(["RIFF"], "fixture.wav", { type: "audio/wav" })] },
     });
     fireEvent.change(screen.getByLabelText(/transcript.*optional/i), { target: { value: "Please verify this payment immediately." } });
@@ -93,6 +93,10 @@ describe("frontend safety paths", () => {
     expect(body.get("consent")).toBe("true");
     expect(body.get("transcript")).toBe("Urgent payment request");
     expect(body.get("transcript_consent")).toBe("true");
+    expect(body.get("retain_audio")).toBe("false");
+
+    await apiService.uploadScan(file, "", false, true);
+    expect(post.mock.calls[1][1].get("retain_audio")).toBe("true");
   });
 
   it("shows completed research analysis after a consented WAV upload", async () => {
@@ -100,10 +104,10 @@ describe("frontend safety paths", () => {
     vi.spyOn(apiService, "uploadScan").mockResolvedValue({ data: { scan } });
     const onUploaded = vi.fn();
     render(<UploadPanel onUploaded={onUploaded} />);
-    fireEvent.change(screen.getByLabelText("WAV audio file"), {
+    fireEvent.change(screen.getByLabelText("WAV or MP3 audio file"), {
       target: { files: [new File(["RIFF"], "fixture.wav", { type: "audio/wav" })] },
     });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByLabelText(/consent to submit this recording/i));
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
     await waitFor(() => expect(onUploaded).toHaveBeenCalledWith(scan));
     expect(screen.getByText(/Research analysis completed/)).toBeInTheDocument();
@@ -122,7 +126,7 @@ describe("frontend safety paths", () => {
 
     render(<MemoryRouter><WorkspaceLayout user={{ id: "user-1", email: "person@example.com" }} onSignOut={vi.fn()} /></MemoryRouter>);
     await waitFor(() => expect(listScans).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText("WAV audio file"), { target: { files: [new File(["RIFF"], "fresh.wav", { type: "audio/wav" })] } });
+    fireEvent.change(screen.getByLabelText("WAV or MP3 audio file"), { target: { files: [new File(["RIFF"], "fresh.wav", { type: "audio/wav" })] } });
     fireEvent.click(screen.getByLabelText(/consent to submit this recording/i));
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
     await waitFor(() => expect(uploadScan).toHaveBeenCalled());

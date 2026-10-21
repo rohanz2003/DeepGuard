@@ -55,6 +55,13 @@ class Config:
             "FIRESTORE_EMULATOR_HOST": os.getenv(
                 "FIRESTORE_EMULATOR_HOST", ""
             ).strip(),
+            # MongoDB is optional.  The lazy audio store reports a clear
+            # admission error only when a caller requests audio retention.
+            "MONGODB_URI": os.getenv("MONGODB_URI", "").strip(),
+            "MONGODB_DATABASE": os.getenv("MONGODB_DATABASE", "deepguard").strip(),
+            "MONGODB_GRIDFS_BUCKET": os.getenv(
+                "MONGODB_GRIDFS_BUCKET", "audio"
+            ).strip(),
             "MAX_UPLOAD_BYTES": max_upload,
             "MAX_REQUEST_BYTES": max_request,
             "MIN_DURATION_SECONDS": float(os.getenv("MIN_DURATION_SECONDS", "1")),

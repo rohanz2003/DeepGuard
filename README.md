@@ -8,8 +8,9 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 
 - React + Vite responsive security-monitoring dashboard
 - Firebase Authentication in the React client with Flask ID-token verification
-- Firestore metadata storage; raw audio is not persisted
-- WAV extension, MIME, signature, size, and duration validation
+- Firestore metadata storage; raw audio is not persisted unless explicitly
+  retained in optional MongoDB GridFS
+- WAV and MP3 extension/MIME/size validation with strict duration checks
 - Protected scan history with per-user authorization and deletion
 - Light/dark theme, collapsible sidebar, and dashboard-tab preferences
 - Explicit unavailable, empty, loading, error, and success states
@@ -17,13 +18,15 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 - A dependency-light NumPy research baseline with deterministic preprocessing and JSON artifacts
 - Optional consented local transcript analysis with separate scam-language signals
 
-`POST /api/scans` validates the WAV and optional transcript synchronously,
+`POST /api/scans` validates WAV or MP3 audio and the optional transcript synchronously,
 stores only metadata plus derived scam fields, and returns HTTP `202` with a
 top-level `status: "pending"`. A bounded in-process `ThreadPoolExecutor`
 worker performs voice inference and updates the owner-scoped record through
-`processing` to `completed` or `failed`. Raw audio remains in memory only for
-the worker handoff and is never stored or returned; transcript text is also
-never stored or returned. The worker supports bounded retries for one
+`processing` to `completed` or `failed`. Raw audio remains in memory for the
+worker handoff and is never stored or returned by default; an explicit
+`retain_audio=true` upload stores bytes in optional MongoDB GridFS and keeps
+only a pointer in Firestore. Transcript text is also never stored or returned.
+The worker supports bounded retries for one
 dedicated transient inference exception and records safe attempt/error fields.
 The dashboard shows queued/processing/failed states and polls the scan detail
 endpoint until a terminal state is reached.
@@ -108,7 +111,7 @@ MODEL_ARTIFACT_PATH=../ai_models/artifacts/baseline.json
 MODEL_THRESHOLD=0.5
 ```
 
-Restart Flask after changing `backend/.env`. Relative model paths resolve from `backend/`. The current artifact and evaluation are in gitignored `ai_models/artifacts/`; the conversion audit is `dataset/prepared/manifest.json`. Model readiness is not Firestore readiness. The web uploader still requires PCM WAV; use prepared WAVs, not original MP3s. See `ai_models/README.md` for exact split provenance, limitations, and rerun behavior.
+Restart Flask after changing `backend/.env`. Relative model paths resolve from `backend/`. The current artifact and evaluation are in gitignored `ai_models/artifacts/`; the conversion audit is `dataset/prepared/manifest.json`. Model readiness is not Firestore readiness. The web uploader accepts PCM WAV and MP3; MP3 is decoded to a bounded mono 16 kHz PCM WAV for inference, while optional playback retention keeps the original MP3. See `ai_models/README.md` for exact split provenance, limitations, and rerun behavior.
 
 ## Run the backend (PowerShell)
 

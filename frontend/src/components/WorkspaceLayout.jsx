@@ -7,16 +7,14 @@ import LiveCallsPage from "../pages/LiveCallsPage";
 import SettingsPage from "../pages/SettingsPage";
 import NotFoundPage from "../pages/NotFoundPage";
 import { apiErrorMessage, apiService } from "../services/api";
-import { mergeScan, normalizeScan, normalizeScanResponse } from "../utils/scan";
+import { mergeScan, normalizeScan, normalizeScanResponse, SENSITIVE_SCAN_FIELDS } from "../utils/scan";
 
 const navItems = [{ to: "/", label: "Overview", icon: "grid" }, { to: "/history", label: "Scan history", icon: "history" }, { to: "/live-calls", label: "Live calls", icon: "radio", planned: true }];
 const emptyData = { scans: [], stats: { total_scans: 0, suspicious_results: 0, analyzed_results: 0, inconclusive_results: 0 } };
-const sensitiveScanFields = new Set(["transcript", "transcript_text"]);
-
 function mergeUploadedScan(listScan, uploadedEntry) {
   const uploadedFields = Object.fromEntries(
     [...uploadedEntry.fields]
-      .filter((field) => !sensitiveScanFields.has(field))
+      .filter((field) => !SENSITIVE_SCAN_FIELDS.has(field))
       .map((field) => [field, uploadedEntry.scan[field]]),
   );
   return normalizeScan({ ...listScan, ...uploadedFields });
@@ -51,10 +49,12 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
   const [data, setData] = useState(emptyData);
   const [loading, setLoading] = useState(!readOnly);
   const [selectedId, setSelectedId] = useState(null);
+  const [currentPreview, setCurrentPreview] = useState(null);
   const [notice, setNotice] = useState("");
   const [loadError, setLoadError] = useState("");
   const listRequestRef = useRef(0);
   const uploadedScansRef = useRef(new Map());
+  const currentPreviewRef = useRef(null);
   const location = useLocation();
   const navigate = useNavigate();
   const selectedScan = useMemo(() => data.scans.find((scan) => scan.id === selectedId), [data.scans, selectedId]);
@@ -64,6 +64,10 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
   useEffect(() => { localStorage.setItem("deepguard-sidebar", collapsed ? "collapsed" : "expanded"); }, [collapsed]);
   useEffect(() => { if (!readOnly) localStorage.setItem("deepguard-preferred-tab", location.pathname === "/history" ? "history" : "overview"); }, [location.pathname, readOnly]);
   useEffect(() => { setSelectedId(null); }, [location.pathname, readOnly, user?.id]);
+  useEffect(() => () => {
+    const previewUrl = currentPreviewRef.current?.url;
+    if (previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(previewUrl);
+  }, []);
   const loadScans = useCallback((reset = false) => {
     if (readOnly) return null;
     const requestId = ++listRequestRef.current;
@@ -98,10 +102,32 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
     try { await apiService.deleteScan(id); uploadedScansRef.current.delete(id); setSelectedId(null); setNotice("Scan record deleted."); reload(); }
     catch (error) { setNotice(apiErrorMessage(error, "Could not delete that scan.")); }
   };
-  const onUploaded = (scan) => {
+  const releasePreview = useCallback((previewUrl) => {
+    const current = currentPreviewRef.current;
+    if (current?.url && (!previewUrl || current.url === previewUrl)) {
+      if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(current.url);
+      currentPreviewRef.current = null;
+      setCurrentPreview(null);
+      return;
+    }
+    if (previewUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(previewUrl);
+  }, []);
+  useEffect(() => {
+    const preview = currentPreviewRef.current;
+    if (preview && preview.scanId !== selectedId) releasePreview(preview.url);
+  }, [releasePreview, selectedId]);
+  const onUploaded = (scan, preview = null) => {
+    if (currentPreviewRef.current?.url) releasePreview(currentPreviewRef.current.url);
     const normalized = scan?.id ? normalizeScan(scan) : null;
+    if (normalized?.id && preview?.url) {
+      const nextPreview = { file: preview.file, scanId: normalized.id, url: preview.url };
+      currentPreviewRef.current = nextPreview;
+      setCurrentPreview(nextPreview);
+    } else if (preview?.url) {
+      releasePreview(preview.url);
+    }
     if (normalized) {
-      const fields = new Set(Object.keys(scan).filter((field) => !sensitiveScanFields.has(field)));
+      const fields = new Set(Object.keys(scan).filter((field) => !SENSITIVE_SCAN_FIELDS.has(field)));
       uploadedScansRef.current = new Map([[normalized.id, { scan: normalized, fields }], ...uploadedScansRef.current]);
       setData((current) => {
         const scans = [normalized, ...current.scans.filter((item) => item.id !== normalized.id)];
@@ -124,7 +150,7 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
     const merged = mergeScan(previousEntry?.scan, normalized);
     const fields = new Set([
       ...(previousEntry?.fields || []),
-      ...Object.keys(scan).filter((field) => !sensitiveScanFields.has(field)),
+      ...Object.keys(scan).filter((field) => !SENSITIVE_SCAN_FIELDS.has(field)),
     ]);
     uploadedScansRef.current = new Map([
       [merged.id, { scan: merged, fields }],
@@ -149,7 +175,7 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
       <div className="sidebar-top"><NavLink to={readOnly ? "/preview" : "/"} className="brand" onClick={() => setMobileOpen(false)}><span className="brand-mark"><Icon name="shield" size={20} /></span><span className="brand-name">Deep<span>Guard</span></span></NavLink><button className="icon-button collapse-button" onClick={() => setCollapsed(!collapsed)} aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}><Icon name="menu" size={19} /></button></div>
       <div className="workspace-chip"><span className="workspace-avatar">{displayUser.email[0].toUpperCase()}</span><span><strong>{readOnly ? "Read-only preview" : "Personal workspace"}</strong><small>{readOnly ? "No account connected" : displayUser.email}</small></span></div>
       <nav className="main-nav" aria-label="Main navigation"><p className="nav-label">Workspace</p>{navItems.map((item) => <NavLink key={item.to} to={readOnly ? `/preview${item.to === "/" ? "" : item.to}` : item.to} end={item.to === "/"} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.planned && <span className="planned-dot" title="Unavailable capability">Unavailable</span>}</NavLink>)}<p className="nav-label secondary">Manage</p><NavLink to={readOnly ? "/preview/settings" : "/settings"} className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`} onClick={() => setMobileOpen(false)}><Icon name="settings" size={18} /><span>Settings</span></NavLink></nav>
-      <div className="sidebar-bottom"><div className="privacy-note"><Icon name="lock" size={16} /><span><strong>Privacy mode</strong><small>Audio is not retained</small></span></div>{readOnly ? <button className="nav-item sign-out" onClick={() => navigate("/login")}><Icon name="logout" size={18} /><span>Sign in</span></button> : <button className="nav-item sign-out" onClick={onSignOut}><Icon name="logout" size={18} /><span>Sign out</span></button>}</div>
+       <div className="sidebar-bottom"><div className="privacy-note"><Icon name="lock" size={16} /><span><strong>Privacy mode</strong><small>Playback retention is opt-in</small></span></div>{readOnly ? <button className="nav-item sign-out" onClick={() => navigate("/login")}><Icon name="logout" size={18} /><span>Sign in</span></button> : <button className="nav-item sign-out" onClick={onSignOut}><Icon name="logout" size={18} /><span>Sign out</span></button>}</div>
     </aside>
     {mobileOpen && <button className="mobile-overlay" onClick={() => setMobileOpen(false)} aria-label="Close navigation" />}
     <main className="main-content">
@@ -157,7 +183,7 @@ export default function WorkspaceLayout({ user, onSignOut, readOnly = false }) {
       {readOnly && <div className="global-notice preview-notice"><Icon name="info" size={16} /><span>Read-only Preview workspace — no account data, private API requests, or actions are enabled.</span><button onClick={() => navigate("/login")} className="link-button">Sign in</button></div>}
       {notice && <div className="global-notice" role="status"><Icon name="info" size={16} /><span>{notice}</span><button onClick={() => setNotice("")} aria-label="Dismiss notification">×</button></div>}
       {loadError && <div className="global-notice error-notice" role="alert"><Icon name="alert" size={16} /><span>{loadError}</span><button onClick={() => { setLoadError(""); reload(); }}>Retry</button></div>}
-      <div className="page-content"><Routes><Route index element={<OverviewPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} onSelect={setSelectedId} onDelete={deleteScan} onUploaded={onUploaded} onScanUpdate={onScanUpdate} navigate={navigate} readOnly={readOnly} />} /><Route path="history" element={<HistoryPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} onSelect={setSelectedId} onDelete={deleteScan} onScanUpdate={onScanUpdate} navigate={navigate} readOnly={readOnly} />} /><Route path="live-calls" element={<LiveCallsPage />} /><Route path="settings" element={<SettingsPage theme={theme} setTheme={setTheme} />} /><Route path="*" element={<NotFoundPage />} /></Routes></div>
+       <div className="page-content"><Routes><Route index element={<OverviewPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} currentPreview={currentPreview?.scanId === selectedId ? currentPreview : null} onSelect={setSelectedId} onDelete={deleteScan} onUploaded={onUploaded} onPreviewDiscard={releasePreview} onScanUpdate={onScanUpdate} navigate={navigate} readOnly={readOnly} />} /><Route path="history" element={<HistoryPage data={data} loading={loading} selectedId={selectedId} selectedScan={selectedScan} currentPreview={currentPreview?.scanId === selectedId ? currentPreview : null} onSelect={setSelectedId} onDelete={deleteScan} onScanUpdate={onScanUpdate} navigate={navigate} readOnly={readOnly} />} /><Route path="live-calls" element={<LiveCallsPage />} /><Route path="settings" element={<SettingsPage theme={theme} setTheme={setTheme} />} /><Route path="*" element={<NotFoundPage />} /></Routes></div>
     </main>
   </div>;
 }

@@ -16,7 +16,9 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _as_iso(value: Any) -> str:
+def _as_iso(value: Any) -> str | None:
+    if value is None:
+        return None
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
@@ -24,12 +26,27 @@ def _as_iso(value: Any) -> str:
     return str(value)
 
 
+def _as_datetime(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
+
+
 class FirestoreScanRepository:
     """Stores metadata at users/{uid}/scans/{scan_id}; audio never reaches it."""
 
     _RAW_CONTENT_FIELDS = frozenset(
-        {"transcript", "raw_transcript", "audio", "audio_bytes"}
+        {
+            "transcript",
+            "raw_transcript",
+            "audio",
+            "audio_bytes",
+            "original_bytes",
+            "raw_audio",
+            "raw_audio_bytes",
+        }
     )
+    _INTERNAL_FIELDS = frozenset({"audio_storage_id"})
 
     def __init__(self, firestore_client):
         self._client = firestore_client
@@ -58,27 +75,47 @@ class FirestoreScanRepository:
     @classmethod
     def _public(cls, document) -> dict:
         data = cls._metadata_only(document.to_dict() or {})
+        for key in cls._INTERNAL_FIELDS:
+            data.pop(key, None)
         data["id"] = document.id
-        for key in ("created_at", "updated_at", "expires_at"):
-            if key in data:
+        for key in ("created_at", "updated_at", "expires_at", "audio_expires_at"):
+            if key in data and data[key] is not None:
+                data[key] = _as_iso(data[key])
+        return data
+
+    @classmethod
+    def _internal(cls, document) -> dict:
+        """Return owner-scoped metadata including private audio pointers."""
+
+        data = cls._metadata_only(document.to_dict() or {})
+        data["id"] = document.id
+        for key in ("created_at", "updated_at", "expires_at", "audio_expires_at"):
+            if key in data and data[key] is not None:
                 data[key] = _as_iso(data[key])
         return data
 
     def create(self, user_id: str, scan: dict) -> dict:
         reference = self._collection(user_id).document(scan["id"])
         stored = self._metadata_only(scan)
-        stored["created_at"] = datetime.fromisoformat(scan["created_at"])
-        stored["updated_at"] = datetime.fromisoformat(
+        stored["created_at"] = _as_datetime(scan["created_at"])
+        stored["updated_at"] = _as_datetime(
             scan.get("updated_at", scan["created_at"])
         )
-        stored["expires_at"] = datetime.fromisoformat(scan["expires_at"])
+        stored["expires_at"] = _as_datetime(scan["expires_at"])
+        if scan.get("audio_expires_at") is not None:
+            stored["audio_expires_at"] = _as_datetime(
+                scan["audio_expires_at"]
+            )
         reference.set(stored)
-        return dict(
+        result = dict(
             stored,
             created_at=scan["created_at"],
             updated_at=scan.get("updated_at", scan["created_at"]),
             expires_at=scan["expires_at"],
         )
+        if scan.get("audio_expires_at") is not None:
+            result["audio_expires_at"] = scan["audio_expires_at"]
+        return result
 
     def update(self, user_id: str, scan_id: str, updates: dict) -> dict | None:
         """Update safe metadata and return the owner-scoped record."""
@@ -88,9 +125,9 @@ class FirestoreScanRepository:
             return None
 
         stored = self._metadata_only(updates)
-        if "updated_at" in stored:
-            if isinstance(stored["updated_at"], str):
-                stored["updated_at"] = datetime.fromisoformat(stored["updated_at"])
+        for key, value in tuple(stored.items()):
+            if key.endswith("_at") and isinstance(value, str):
+                stored[key] = datetime.fromisoformat(value)
         reference.update(stored)
         updated = reference.get()
         if not updated.exists:
@@ -112,6 +149,18 @@ class FirestoreScanRepository:
         if not document.exists:
             return None
         scan = self._public(document)
+        if _parse_time(scan["expires_at"]) <= now:
+            document.reference.delete()
+            return None
+        return scan
+
+    def get_internal(self, user_id: str, scan_id: str, now: datetime) -> dict | None:
+        """Read an owner-scoped scan including the private audio pointer."""
+
+        document = self._collection(user_id).document(scan_id).get()
+        if not document.exists:
+            return None
+        scan = self._internal(document)
         if _parse_time(scan["expires_at"]) <= now:
             document.reference.delete()
             return None

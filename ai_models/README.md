@@ -98,8 +98,10 @@ MODEL_THRESHOLD=0.5
 Relative artifact paths resolve from `backend/`, independent of shell directory.
 Restart Flask and inspect `/api/health`. Model readiness is separate from Firestore
 readiness; scan history still requires working Firebase/Firestore configuration.
-The web upload endpoint continues accepting **PCM WAV only**, not MP3. The local
-dataset preparation tool does not change the API's upload contract.
+The web upload endpoint accepts **PCM WAV and MP3**. MP3 uploads are decoded by
+the backend's local FFmpeg boundary and normalized to mono 16 kHz signed-16-bit
+PCM WAV for inference. The local dataset preparation tool remains separate from
+the API upload path.
 
 ## Limitations and checks
 

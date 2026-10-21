@@ -100,12 +100,92 @@ describe("async scan result lifecycle", () => {
   it("shows queued messaging for the asynchronous upload admission", async () => {
     vi.spyOn(apiService, "uploadScan").mockResolvedValue({ data: { scan: { ...baseScan, status: "pending" } } });
     render(<UploadPanel onUploaded={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("WAV audio file"), { target: { files: [new File(["RIFF"], "queued.wav", { type: "audio/wav" })] } });
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.change(screen.getByLabelText("WAV or MP3 audio file"), { target: { files: [new File(["RIFF"], "queued.wav", { type: "audio/wav" })] } });
+    fireEvent.click(screen.getByLabelText(/consent to submit this recording/i));
     fireEvent.click(screen.getByRole("button", { name: /start review/i }));
     await flushPromises();
 
     expect(screen.getByRole("status")).toHaveTextContent(/queued for analysis/i);
     expect(screen.queryByText(/no model score/i)).not.toBeInTheDocument();
+  });
+
+  it("shows retained playback with an owner-protected audio player", () => {
+    render(<ResultCard
+      initialScan={{
+        ...baseScan,
+        status: "completed",
+        audio_retained: true,
+        audio_playback_url: "https://media.example.test/owner-scan.wav",
+      }}
+      onClose={vi.fn()}
+      onDelete={vi.fn()}
+    />);
+
+    expect(screen.getByRole("heading", { name: "Playback available" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Private audio playback")).toHaveAttribute("src", "https://media.example.test/owner-scan.wav");
+    expect(screen.getByText("Retained for 30 days")).toBeInTheDocument();
+  });
+
+  it("shows explicit unretained playback availability without an audio player", () => {
+    render(<ResultCard
+      initialScan={{ ...baseScan, status: "completed", audio_retained: false }}
+      onClose={vi.fn()}
+      onDelete={vi.fn()}
+    />);
+
+    expect(screen.getByRole("heading", { name: "Playback not retained" })).toBeInTheDocument();
+    expect(screen.getByText("Not retained")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Private audio playback")).not.toBeInTheDocument();
+  });
+
+  it("loads retained audio through the authenticated apiService endpoint", async () => {
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const createObjectURL = vi.fn(() => "blob:owner-playback");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: createObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: revokeObjectURL });
+    const getScanPlayback = vi.spyOn(apiService, "getScanPlayback").mockResolvedValue({ data: new Blob(["RIFF"], { type: "audio/wav" }) });
+
+    render(<ResultCard
+      initialScan={{ ...baseScan, id: "retained-endpoint", status: "completed", audio_retained: true }}
+      onClose={vi.fn()}
+      onDelete={vi.fn()}
+    />);
+    await flushPromises();
+
+    expect(getScanPlayback).toHaveBeenCalledWith("retained-endpoint", "/scans/retained-endpoint/audio");
+    expect(screen.getByLabelText("Private audio playback")).toHaveAttribute("src", "blob:owner-playback");
+    expect(createObjectURL).toHaveBeenCalled();
+
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: originalCreateObjectURL });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: originalRevokeObjectURL });
+  });
+
+  it("retries a transient playback network failure", async () => {
+    const originalCreateObjectURL = URL.createObjectURL;
+    const createObjectURL = vi.fn(() => "blob:retried-playback");
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: createObjectURL });
+    const getScanPlayback = vi.spyOn(apiService, "getScanPlayback")
+      .mockRejectedValueOnce(Object.assign(new Error("Network Error"), { code: "ERR_NETWORK" }))
+      .mockResolvedValueOnce({ data: new Blob(["RIFF"], { type: "audio/wav" }) });
+
+    render(<ResultCard
+      initialScan={{ ...baseScan, id: "retry-playback", status: "completed", audio_retained: true }}
+      onClose={vi.fn()}
+      onDelete={vi.fn()}
+    />);
+    await flushPromises();
+    expect(getScanPlayback).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getScanPlayback).toHaveBeenCalledTimes(2);
+    expect(screen.getByLabelText("Private audio playback")).toHaveAttribute("src", "blob:retried-playback");
+
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: originalCreateObjectURL });
   });
 });

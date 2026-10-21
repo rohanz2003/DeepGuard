@@ -6,6 +6,7 @@ from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 
 from .config import Config
+from .audio_store import MongoGridFSAudioStore
 from .firebase import FirebaseServices
 from .inference import ModelInferenceService
 from .jobs import ScanJobManager
@@ -26,8 +27,29 @@ def create_app(test_config=None):
 
     app.config["MAX_CONTENT_LENGTH"] = app.config["MAX_REQUEST_BYTES"]
     app.config["MAX_FORM_MEMORY_SIZE"] = 128 * 1024
-    app.config["MAX_FORM_PARTS"] = 4
+    # UploadScan sends audio plus consent, transcript, transcript consent, and
+    # retention preference. Keep a small margin for future non-file fields.
+    app.config["MAX_FORM_PARTS"] = 8
     app.extensions["firebase"] = FirebaseServices(app.config)
+    injected_audio_store = app.config.get("AUDIO_STORE")
+    if injected_audio_store is None:
+        injected_audio_store = app.config.get("SCAN_AUDIO_STORE")
+    if injected_audio_store is None:
+        injected_audio_store = app.config.get("MONGO_AUDIO_STORE")
+    if injected_audio_store is None:
+        injected_audio_store = app.config.get("AUDIO_STORAGE")
+    if injected_audio_store is None:
+        injected_audio_store = app.config.get("SCAN_AUDIO_STORAGE")
+    app.extensions["audio_store"] = (
+        injected_audio_store
+        if injected_audio_store is not None
+        else MongoGridFSAudioStore(
+            app.config.get("MONGODB_URI", ""),
+            app.config.get("MONGODB_DATABASE", ""),
+            app.config.get("MONGODB_GRIDFS_BUCKET", ""),
+        )
+    )
+    app.extensions["audio_storage"] = app.extensions["audio_store"]
     app.extensions["inference"] = (
         app.config["INFERENCE_SERVICE"]
         if "INFERENCE_SERVICE" in app.config
@@ -66,7 +88,8 @@ def create_app(test_config=None):
         app,
         resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}},
         methods=["GET", "POST", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Authorization", "Content-Type", "Range"],
+        expose_headers=["Accept-Ranges", "Content-Length", "Content-Range"],
     )
 
     @app.before_request
