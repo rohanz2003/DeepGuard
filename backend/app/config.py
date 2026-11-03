@@ -49,6 +49,29 @@ class Config:
                 candidate = Path(__file__).resolve().parents[1] / candidate
             policy_path = str(candidate.resolve())
 
+        queue_redis_url = os.getenv("QUEUE_REDIS_URL", "").strip()
+        redis_url = os.getenv("REDIS_URL", "").strip()
+        requested_queue_backend = os.getenv("QUEUE_BACKEND", "local").strip().lower()
+        requested_rate_limit_backend = os.getenv(
+            "RATE_LIMIT_BACKEND", "local"
+        ).strip().lower()
+        # A single Render web service can run the bounded local worker without
+        # Redis or a paid background worker. Keep an explicitly configured
+        # Redis deployment durable whenever a connection URL is present, but
+        # fail over to the local development-safe path instead of crashing at
+        # import time when the optional Redis service has not been provisioned.
+        queue_backend = (
+            "local"
+            if requested_queue_backend == "redis"
+            and not (queue_redis_url or redis_url)
+            else requested_queue_backend
+        )
+        rate_limit_backend = (
+            "local"
+            if requested_rate_limit_backend == "redis" and not redis_url
+            else requested_rate_limit_backend
+        )
+
         return {
             "ENVIRONMENT": environment,
             "FIREBASE_PROJECT_ID": os.getenv("FIREBASE_PROJECT_ID", "").strip(),
@@ -100,12 +123,14 @@ class Config:
             "SCAN_MAX_WORKERS": int(os.getenv("SCAN_MAX_WORKERS", "2")),
             "SCAN_MAX_QUEUE": int(os.getenv("SCAN_MAX_QUEUE", "8")),
             "SCAN_MAX_ATTEMPTS": int(os.getenv("SCAN_MAX_ATTEMPTS", "2")),
-            "QUEUE_BACKEND": os.getenv("QUEUE_BACKEND", "local").strip().lower(),
-            "QUEUE_REDIS_URL": os.getenv("QUEUE_REDIS_URL", "").strip(),
+            "QUEUE_BACKEND": queue_backend,
+            "QUEUE_BACKEND_FALLBACK": queue_backend != requested_queue_backend,
+            "QUEUE_REDIS_URL": queue_redis_url,
             "QUEUE_NAME": os.getenv("QUEUE_NAME", "deepguard-scans").strip(),
             "QUEUE_RETRY_BACKOFF_SECONDS": float(os.getenv("QUEUE_RETRY_BACKOFF_SECONDS", "2")),
-            "REDIS_URL": os.getenv("REDIS_URL", "").strip(),
-            "RATE_LIMIT_BACKEND": os.getenv("RATE_LIMIT_BACKEND", "local").strip().lower(),
+            "REDIS_URL": redis_url,
+            "RATE_LIMIT_BACKEND": rate_limit_backend,
+            "RATE_LIMIT_BACKEND_FALLBACK": rate_limit_backend != requested_rate_limit_backend,
             "METRICS_ENABLED": _bool("METRICS_ENABLED", True),
             "AUDIO_QUALITY_ENABLED": _bool("AUDIO_QUALITY_ENABLED", True),
             "SEGMENT_ANALYSIS_ENABLED": _bool("SEGMENT_ANALYSIS_ENABLED", True),

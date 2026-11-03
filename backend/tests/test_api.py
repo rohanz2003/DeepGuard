@@ -313,6 +313,23 @@ class ModelLoadingTestCase(unittest.TestCase):
         self.assertEqual(result["model_version"], "fake-v1")
 
 class ConfigurationTestCase(unittest.TestCase):
+    def test_missing_redis_urls_fall_back_to_local_services(self):
+        with patch.dict(
+            os.environ,
+            {
+                "QUEUE_BACKEND": "redis",
+                "QUEUE_REDIS_URL": "",
+                "REDIS_URL": "",
+                "RATE_LIMIT_BACKEND": "redis",
+            },
+            clear=False,
+        ):
+            settings = Config.from_env()
+            self.assertEqual(settings["QUEUE_BACKEND"], "local")
+            self.assertEqual(settings["RATE_LIMIT_BACKEND"], "local")
+            self.assertTrue(settings["QUEUE_BACKEND_FALLBACK"])
+            self.assertTrue(settings["RATE_LIMIT_BACKEND_FALLBACK"])
+
     def test_production_cannot_enable_emulators(self):
         with patch.dict(
             os.environ,

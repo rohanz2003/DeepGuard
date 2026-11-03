@@ -327,6 +327,12 @@ The worker is required when `QUEUE_BACKEND=redis`; otherwise accepted uploads
 remain `pending`. Set `QUEUE_BACKEND=local` only for a single-process
 development-style deployment and omit the worker.
 
+For an affordable single Web Service deployment, `QUEUE_BACKEND=local` and
+`RATE_LIMIT_BACKEND=local` run without Redis or a Background Worker. If either
+Redis backend is left selected without its URL, the application logs a warning
+and falls back to the local implementation; configure the URLs explicitly when
+durable queue behavior is required. Keep `WEB_CONCURRENCY=1` for this mode.
+
 ### 3. Deploy the frontend on Vercel
 
 Import the same repository as a Vercel project and set:

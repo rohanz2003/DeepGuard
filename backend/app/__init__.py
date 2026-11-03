@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,6 +28,14 @@ def create_app(test_config=None):
         app.config.update(test_config)
     Config.validate(app.config)
     configure_logging()
+    if app.config.get("QUEUE_BACKEND_FALLBACK"):
+        logging.getLogger(__name__).warning(
+            "Redis queue requested without a Redis URL; using the local in-process queue"
+        )
+    if app.config.get("RATE_LIMIT_BACKEND_FALLBACK"):
+        logging.getLogger(__name__).warning(
+            "Redis rate limiting requested without REDIS_URL; using the local limiter"
+        )
 
     app.config["MAX_CONTENT_LENGTH"] = app.config["MAX_REQUEST_BYTES"]
     app.config["MAX_FORM_MEMORY_SIZE"] = 128 * 1024
