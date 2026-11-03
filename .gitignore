@@ -9,5 +9,7 @@ backend/.pytest_cache/
 frontend/node_modules/
 frontend/dist/
 dataset/
-ai_models/artifacts/
+ai_models/artifacts/*
+!ai_models/artifacts/
+!ai_models/artifacts/baseline.json
 .DS_Store

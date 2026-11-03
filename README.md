@@ -68,8 +68,8 @@ credentials remain outside the repository.
 
 Telephony remains unavailable. Scam-language analysis is now available as a local,
 rule-based heuristic when the user supplies a transcript and explicit consent.
-The private local voice model is enabled for research only; the dataset and
-generated model are not distributed in source control.
+The bundled voice model is enabled for research only; the private training
+dataset is not distributed in source control.
 
 ## Consented transcript scam-language analysis
 
@@ -122,7 +122,7 @@ MODEL_THRESHOLD=0.5
 MODEL_POLICY_PATH=../ai_models/artifacts/baseline-policy.json
 ```
 
-Restart Flask after changing `backend/.env`. Relative model paths resolve from `backend/`. The current artifact and evaluation are in gitignored `ai_models/artifacts/`; the conversion audit is `dataset/prepared/manifest.json`. Model readiness is not Firestore readiness. The web uploader accepts PCM WAV and MP3; MP3 is decoded to a bounded mono 16 kHz PCM WAV for inference, while optional playback retention keeps the original MP3. The API now records audio-quality diagnostics and bounded segment scores, and presents raw scores as uncalibrated synthetic-audio indicators. See `ai_models/README.md` for external evaluation, augmentation, calibration, split provenance, limitations, and rerun behavior.
+Restart Flask after changing `backend/.env`. Relative model paths resolve from `backend/`; when no path is configured, the bundled `ai_models/artifacts/baseline.json` is used if present. The training dataset and generated evaluation reports remain ignored; the conversion audit is `dataset/prepared/manifest.json`. Model readiness is not Firestore readiness. The web uploader accepts PCM WAV and MP3; MP3 is decoded to a bounded mono 16 kHz PCM WAV for inference, while optional playback retention keeps the original MP3. The API now records audio-quality diagnostics and bounded segment scores, and presents raw scores as uncalibrated synthetic-audio indicators. See `ai_models/README.md` for external evaluation, augmentation, calibration, split provenance, limitations, and rerun behavior.
 
 ## Run the backend (PowerShell)
 

@@ -10,6 +10,8 @@ backend/.pytest_cache
 backend/data
 backend/tests
 dataset
-ai_models/artifacts
+ai_models/artifacts/*
+!ai_models/artifacts/
+!ai_models/artifacts/baseline.json
 frontend/node_modules
 frontend/dist

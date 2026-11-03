@@ -299,18 +299,22 @@ For the recommended Redis deployment, set `MONGODB_URI`,
 playback retention is disabled. Leave `MONGODB_URI` empty only when using the
 local queue and no retained playback.
 
-The model artifact is not committed to this repository. Upload the reviewed
-artifact as a Render Secret File and set, for example:
+This repository bundles the reviewed research baseline at
+`ai_models/artifacts/baseline.json` so the native Render service can load it
+without a Secret File. The application discovers that file automatically when
+`MODEL_ARTIFACT_PATH` is empty. You can also set the explicit path:
 
 ```dotenv
-MODEL_ARTIFACT_PATH=/etc/secrets/baseline.json
+MODEL_ARTIFACT_PATH=../ai_models/artifacts/baseline.json
 MODEL_POLICY_PATH=/etc/secrets/baseline-policy.json
 ```
 
-Do not set `MODEL_POLICY_PATH` until an independently audited,
-speaker/generator-disjoint calibration policy has been reviewed. Without a
-model artifact, the API still starts but scans return an unavailable or
-inconclusive model result.
+The baseline remains research-only and is not a fraud probability. Do not set
+`MODEL_POLICY_PATH` until an independently audited, speaker/generator-disjoint
+calibration policy has been reviewed.
+
+If a deployment omits the bundled artifact, the API still starts but scans
+return an unavailable or inconclusive model result.
 
 ### 2. Deploy the durable worker on Render
 

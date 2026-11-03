@@ -35,7 +35,9 @@ any rejected file prevents publication of usable training data.
 Every output directory must be new. Reruns refuse even an empty existing output;
 use a new name such as `dataset/prepared-v2`. Failed runs leave a failure manifest,
 not a partial usable dataset. Review exclusions in that local manifest. Originals,
-prepared audio, manifests, model artifacts, and detailed provenance are gitignored.
+prepared audio, manifests, and detailed provenance are gitignored. The reviewed
+research baseline JSON is bundled for the demo deployment; it contains model
+parameters and provenance metadata, not raw audio.
 
 ## Train, then evaluate the exact saved holdout
 
@@ -87,7 +89,7 @@ a heuristic, not a separately evaluated decision rule. Scam-language analysis is
 a separate API feature and is not part of audio model training; no call-blocking
 action is part of training.
 
-## Enable for local research
+## Enable for local research or the demo deployment
 
 In private `backend/.env`:
 
@@ -97,6 +99,8 @@ MODEL_THRESHOLD=0.5
 ```
 
 Relative artifact paths resolve from `backend/`, independent of shell directory.
+When this variable is empty, the backend automatically uses the bundled
+`ai_models/artifacts/baseline.json` when that file is present.
 Restart Flask and inspect `/api/health`. Model readiness is separate from Firestore
 readiness; scan history still requires working Firebase/Firestore configuration.
 The web upload endpoint accepts **PCM WAV and MP3**. MP3 uploads are decoded by

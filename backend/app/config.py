@@ -37,6 +37,18 @@ class Config:
         threshold_value = os.getenv("MODEL_THRESHOLD", "").strip()
         threshold = float(threshold_value or "0.5")
         artifact_path = os.getenv("MODEL_ARTIFACT_PATH", "").strip()
+        if not artifact_path:
+            # The reviewed research baseline is bundled for the demo
+            # deployment when present. A missing file still fails closed and
+            # leaves inference unavailable.
+            bundled_artifact = (
+                Path(__file__).resolve().parents[2]
+                / "ai_models"
+                / "artifacts"
+                / "baseline.json"
+            )
+            if bundled_artifact.is_file():
+                artifact_path = str(bundled_artifact.resolve())
         if artifact_path:
             candidate = Path(artifact_path).expanduser()
             if not candidate.is_absolute():
