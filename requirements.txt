@@ -1,0 +1,4 @@
+# Render's native Python service runs its build command from the repository
+# root. Keep the canonical dependency list in backend/ while exposing the
+# root-level entry point Render expects.
+-r backend/requirements.txt

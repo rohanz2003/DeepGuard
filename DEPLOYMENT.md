@@ -257,6 +257,19 @@ Create a Render **Web Service** connected to this repository:
 | Start Command | `gunicorn --chdir backend --config backend/gunicorn.conf.py run:app` |
 | Health Check Path | `/api/health` |
 
+If Render is configured with the native **Python** runtime instead of Docker,
+use the same repository-root service settings. The committed root-level
+`requirements.txt` forwards to `backend/requirements.txt`, and `runtime.txt`
+keeps the native service on Python 3.12.9:
+
+| Setting | Value |
+| --- | --- |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `gunicorn --chdir backend --config backend/gunicorn.conf.py run:app` |
+
+Do not set the root directory to `backend` for this repository: the backend
+Dockerfile and runtime model package use the root-level `ai_models/` directory.
+
 Create a Render Redis-compatible **Key Value** instance and set its internal
 connection URL in the web service as both `QUEUE_REDIS_URL` and `REDIS_URL`.
 Then set these production variables:
