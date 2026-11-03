@@ -30,10 +30,18 @@ _PUBLIC_SCAN_FIELDS = (
     "duration_seconds",
     "status",
     "deepfake_status",
+    "synthetic_audio_score",
+    "calibrated_score",
+    "score_type",
+    "audio_quality",
+    "segment_scores",
+    "inference_ms",
     "scam_status",
     "scam_score",
     "scam_categories",
     "scam_explanation",
+    "transcript_language",
+    "transcript_source",
     "confidence",
     "model_version",
     "explanation",
@@ -55,6 +63,8 @@ _SCAM_FIELDS = (
     "scam_score",
     "scam_categories",
     "scam_explanation",
+    "transcript_language",
+    "transcript_source",
 )
 
 
@@ -311,6 +321,45 @@ def _public_scan(scan: dict) -> dict:
     """
 
     public = {key: scan[key] for key in _PUBLIC_SCAN_FIELDS if key in scan}
+    public.setdefault("synthetic_audio_score", public.get("confidence"))
+    public.setdefault("calibrated_score", None)
+    public.setdefault("score_type", "uncalibrated_synthetic_audio_score")
+    public.setdefault("audio_quality", {})
+    public.setdefault("segment_scores", [])
+    public.setdefault("inference_ms", None)
+    public.setdefault("transcript_language", "auto")
+    public.setdefault("transcript_source", "manual")
+    quality = public.get("audio_quality")
+    if not isinstance(quality, dict):
+        quality = {}
+    public["audio_quality"] = {
+        key: quality[key]
+        for key in (
+            "version",
+            "status",
+            "duration_seconds",
+            "sample_rate_hz",
+            "activity_ratio",
+            "clipping_ratio",
+            "snr_db",
+            "peak_amplitude",
+        )
+        if key in quality
+    }
+    public["audio_quality"]["reasons"] = [
+        reason for reason in quality.get("reasons", [])
+        if isinstance(reason, str)
+    ][:10]
+    safe_segments = []
+    for segment in public.get("segment_scores", []):
+        if not isinstance(segment, dict):
+            continue
+        safe_segments.append({
+            key: segment[key]
+            for key in ("start_seconds", "end_seconds", "synthetic_audio_score", "status")
+            if key in segment
+        })
+    public["segment_scores"] = safe_segments[:24]
     defaults = unavailable_scam_result()
     public["scam_status"] = public.get("scam_status") or defaults["scam_status"]
     public["scam_score"] = public.get("scam_score")
@@ -329,9 +378,17 @@ def _pending_inference() -> dict:
         "status": "pending",
         "deepfake_status": "inconclusive",
         "confidence": None,
+        "synthetic_audio_score": None,
+        "calibrated_score": None,
+        "score_type": "uncalibrated_synthetic_audio_score",
+        "audio_quality": {},
+        "segment_scores": [],
+        "inference_ms": None,
         "model_version": current_app.config.get("MODEL_VERSION", "not-configured"),
         "explanation": (
-            "The upload was validated and queued for bounded in-process voice analysis."
+            "The upload was validated and queued for durable voice analysis."
+            if current_app.config.get("QUEUE_BACKEND") == "redis"
+            else "The upload was validated and queued for bounded local voice analysis."
         ),
     }
 
@@ -374,6 +431,12 @@ def _scan_payload(
         "duration_seconds": round(metadata.duration_seconds, 2),
         "status": inference["status"],
         "deepfake_status": inference["deepfake_status"],
+        "synthetic_audio_score": inference.get("synthetic_audio_score"),
+        "calibrated_score": inference.get("calibrated_score"),
+        "score_type": inference.get("score_type", "uncalibrated_synthetic_audio_score"),
+        "audio_quality": inference.get("audio_quality") or getattr(metadata, "audio_quality", {}) or {},
+        "segment_scores": inference.get("segment_scores") or [],
+        "inference_ms": inference.get("inference_ms"),
         **scam,
         "confidence": inference["confidence"],
         "model_version": inference["model_version"],
@@ -417,12 +480,23 @@ def health():
             "version": current_app.config.get("MODEL_VERSION", "not-configured"),
         }
     )
+    job_manager = current_app.extensions.get("scan_jobs")
+    queue_status = (
+        job_manager.readiness()
+        if hasattr(job_manager, "readiness")
+        else {
+            "status": "ready",
+            "backend": "local",
+            "active_jobs": getattr(job_manager, "active_count", None),
+        }
+    )
     return jsonify(
         {
             "status": "ok",
             "service": "deepguard-api",
             "firebase": firebase_status,
             "model": model_status,
+            "queue": queue_status,
             "message": (
                 "API is ready, but Firestore storage is unavailable."
                 if firebase_status.get("status") != "ready"
@@ -434,6 +508,14 @@ def health():
             ),
         }
     )
+
+
+@api.get("/metrics")
+@token_required
+def metrics():
+    """Return owner-neutral operational counters to an authenticated operator."""
+
+    return jsonify(current_app.extensions["metrics"].snapshot())
 
 
 @api.get("/auth/me")
@@ -461,6 +543,9 @@ def list_scans():
         if scan.get("deepfake_status") in {"high", "review"}
         or scan.get("scam_status") in {"high", "review"}
     )
+    metrics = current_app.extensions.get("metrics")
+    if metrics is not None:
+        metrics.increment("scans_listed_total")
     return jsonify(
         {
             "scans": scans,
@@ -494,12 +579,19 @@ def create_scan():
         return error("Too many uploads. Please try again shortly.", 429)
     if request.form.get("consent") != "true":
         return error("Explicit consent is required before analyzing audio.")
+    metrics = current_app.extensions.get("metrics")
+    if metrics is not None:
+        metrics.increment("scan_upload_attempts_total")
 
     transcript = request.form.get("transcript")
+    transcript_language = request.form.get("transcript_language", "auto").strip().lower() or "auto"
+    if transcript_language not in {"auto", "en", "hi", "es"}:
+        return error("The transcript language is unsupported.")
     try:
         scam_result = analyze_transcript(
             transcript,
             consented=(request.form.get("transcript_consent") == "true"),
+            language=transcript_language,
         )
     except TranscriptValidationError as exc:
         return error(str(exc))
@@ -514,6 +606,13 @@ def create_scan():
             current_app.config["MAX_UPLOAD_BYTES"],
             current_app.config["MIN_DURATION_SECONDS"],
             current_app.config["MAX_DURATION_SECONDS"],
+        )
+        metadata = metadata.__class__(
+            **{
+                **metadata.__dict__,
+                "transcribe_audio": request.form.get("transcribe_audio") == "true",
+                "transcript_language": transcript_language,
+            }
         )
     except AudioValidationError as exc:
         return error(str(exc))
@@ -604,6 +703,11 @@ def create_scan():
             "status": "failed",
             "deepfake_status": "inconclusive",
             "confidence": None,
+            "synthetic_audio_score": None,
+            "calibrated_score": None,
+            "score_type": "uncalibrated_synthetic_audio_score",
+            "audio_quality": getattr(metadata, "audio_quality", {}) or {},
+            "segment_scores": [],
             "explanation": "The scan could not be queued for processing.",
             "error_code": "queue_unavailable",
             "error_explanation": "The scan worker was unavailable.",
@@ -629,6 +733,8 @@ def create_scan():
         return jsonify({"status": "failed", "scan": _public_scan(failed)}), 503
     # Always return the persisted admission state.  A fast worker may finish
     # before jsonify runs, but POST remains a stable 202/pending contract.
+    if metrics is not None:
+        metrics.increment("scan_jobs_admitted_total")
     return jsonify({"status": "pending", "scan": _public_scan(stored)}), 202
 
 

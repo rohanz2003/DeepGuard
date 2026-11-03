@@ -138,6 +138,28 @@ describe("async scan result lifecycle", () => {
     expect(screen.queryByLabelText("Private audio playback")).not.toBeInTheDocument();
   });
 
+  it("labels voice output as a synthetic-audio score and renders quality evidence", () => {
+    render(<ResultCard
+      initialScan={{
+        ...baseScan,
+        status: "completed",
+        deepfake_status: "review",
+        synthetic_audio_score: 0.61,
+        calibrated_score: 0.58,
+        score_type: "calibrated_synthetic_audio_score",
+        audio_quality: { status: "review", reasons: ["clipping_detected"] },
+        segment_scores: [{ start_seconds: 0, end_seconds: 5, synthetic_audio_score: 0.61, status: "review" }],
+      }}
+      onClose={vi.fn()}
+      onDelete={vi.fn()}
+    />);
+
+    expect(screen.getByText("61% uncalibrated synthetic-audio score")).toBeInTheDocument();
+    expect(screen.getByText("58% calibrated review score · not fraud probability")).toBeInTheDocument();
+    expect(screen.getByText("clipping detected")).toBeInTheDocument();
+    expect(screen.getByText("0s–5s")).toBeInTheDocument();
+  });
+
   it("loads retained audio through the authenticated apiService endpoint", async () => {
     const originalCreateObjectURL = URL.createObjectURL;
     const originalRevokeObjectURL = URL.revokeObjectURL;

@@ -17,6 +17,10 @@ DeepGuard is a privacy-aware workspace for reviewing suspicious voice recordings
 - Backend tests for auth, health, validation, persistence, and authorization
 - A dependency-light NumPy research baseline with deterministic preprocessing and JSON artifacts
 - Optional consented local transcript analysis with separate scam-language signals
+- Audio-quality gates for silence/clipping/noise and bounded segment-level evidence
+- Optional local-only multilingual speech-to-text through a configured Whisper-compatible model
+- Audited external-evaluation, deterministic augmentation, calibration, and cost-based threshold tooling
+- Optional Redis durable scan queue with crash recovery, retries, and dead-letter monitoring
 
 `POST /api/scans` validates WAV or MP3 audio and the optional transcript synchronously,
 stores only metadata plus derived scam fields, and returns HTTP `202` with a
@@ -32,6 +36,12 @@ The dashboard shows queued/processing/failed states and polls the scan detail
 endpoint until a terminal state is reached.
 This is not a durable cross-process queue: queued work is lost if a process
 exits, and each process has its own bounded manager.
+
+For production, set `QUEUE_BACKEND=redis`, `QUEUE_REDIS_URL`, and `REDIS_URL`,
+configure MongoDB GridFS for short-lived queued-audio pointers, and run a
+dedicated worker with `python -m app.queue_worker` from `backend/`. The worker
+uses a Redis processing list for crash recovery; failed transport payloads go
+to a dead-letter list. The local queue remains the default for development.
 
 ## Firebase setup
 
@@ -109,9 +119,10 @@ Only after reviewing held-out evaluation results should you configure the API:
 ```dotenv
 MODEL_ARTIFACT_PATH=../ai_models/artifacts/baseline.json
 MODEL_THRESHOLD=0.5
+MODEL_POLICY_PATH=../ai_models/artifacts/baseline-policy.json
 ```
 
-Restart Flask after changing `backend/.env`. Relative model paths resolve from `backend/`. The current artifact and evaluation are in gitignored `ai_models/artifacts/`; the conversion audit is `dataset/prepared/manifest.json`. Model readiness is not Firestore readiness. The web uploader accepts PCM WAV and MP3; MP3 is decoded to a bounded mono 16 kHz PCM WAV for inference, while optional playback retention keeps the original MP3. See `ai_models/README.md` for exact split provenance, limitations, and rerun behavior.
+Restart Flask after changing `backend/.env`. Relative model paths resolve from `backend/`. The current artifact and evaluation are in gitignored `ai_models/artifacts/`; the conversion audit is `dataset/prepared/manifest.json`. Model readiness is not Firestore readiness. The web uploader accepts PCM WAV and MP3; MP3 is decoded to a bounded mono 16 kHz PCM WAV for inference, while optional playback retention keeps the original MP3. The API now records audio-quality diagnostics and bounded segment scores, and presents raw scores as uncalibrated synthetic-audio indicators. See `ai_models/README.md` for external evaluation, augmentation, calibration, split provenance, limitations, and rerun behavior.
 
 ## Run the backend (PowerShell)
 
@@ -155,10 +166,10 @@ npm test
 npm run lint
 ```
 
-## Next implementation slice
+## Remaining production work
 
-1. Audit dataset licenses/labels and evaluate on a separate verified speaker/generator-disjoint corpus.
-2. Replace the bounded in-process worker with a durable shared job queue before production-scale use; evaluate a stronger model against this baseline.
-3. Expand and validate the local transcript rules with a labeled, privacy-reviewed corpus.
-4. Configure Firestore TTL operationally for the `expires_at` retention field.
-5. Investigate authorized Twilio call flows; do not assume browser call capture.
+1. Supply an independently audited speaker/generator-disjoint corpus and review the external-evaluation report before deploying a model policy.
+2. Configure Redis, MongoDB temporary queue storage, the dedicated queue worker, alerts, and the shared rate limiter in staging.
+3. Configure Firestore TTL for `expires_at` and schedule `python -m app.maintenance --cleanup-gridfs`.
+4. Validate the local transcript rules and optional local speech-to-text model on a privacy-reviewed multilingual corpus.
+5. Investigate authorized Twilio/SIP flows; do not assume browser call capture.

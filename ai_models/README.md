@@ -84,7 +84,8 @@ Score `1` is the synthetic-audio direction and `0` the bonafide direction. It is
 **uncalibrated**, not a reliable probability of fraud. The fixed evaluation cutoff
 is 0.5. The UI additionally marks the 0.35–0.5 band as needing review; that band is
 a heuristic, not a separately evaluated decision rule. Scam-language analysis is
-still unavailable; no text classifier or call-blocking action is part of training.
+a separate API feature and is not part of audio model training; no call-blocking
+action is part of training.
 
 ## Enable for local research
 
@@ -115,3 +116,61 @@ Test on a separate, verified speaker/generator-disjoint corpus before deployment
 ```powershell
 backend\.venv\Scripts\python.exe -m unittest discover -s ai_models/tests -v
 ```
+
+## Validation, augmentation, and calibration
+
+The training command can add deterministic robustness variants **only to the
+training membership**. The saved holdout is never augmented:
+
+```powershell
+backend\.venv\Scripts\python.exe -m ai_models.train `
+  --dataset dataset/prepared-v2 `
+  --output ai_models/artifacts/baseline-v2.json `
+  --group-by filename `
+  --augment noise --augment telephone --augment reverb --augment compression --augment pitch
+```
+
+The augmentation methods approximate additive noise, telephone bandwidth,
+reverberation, quantization/compression, and pitch variation. They are not a
+substitute for evaluation on real codecs and acoustic environments.
+
+Audit a separately sourced corpus with a sidecar CSV/JSON containing at least
+`path`, `label`, `speaker_id`, `generator_id`, `language`, `license`, and
+`codec`:
+
+```powershell
+backend\.venv\Scripts\python.exe -m ai_models.audit `
+  --dataset validation/prepared `
+  --metadata validation/metadata.csv `
+  --reference-metadata dataset-metadata/training.csv `
+  --strict --output validation/audit.json
+```
+
+Then evaluate the saved model without redrawing its holdout:
+
+```powershell
+backend\.venv\Scripts\python.exe -m ai_models.external_evaluate `
+  --model ai_models/artifacts/baseline-v2.json `
+  --dataset validation/prepared `
+  --metadata validation/metadata.csv `
+  --reference-metadata dataset-metadata/training.csv `
+  --output validation/external-evaluation.json
+```
+
+Calibration and threshold selection are a separate step. The output records
+the calibration corpus fingerprint and explicit false-positive/false-negative
+costs; it must not be generated from the model's training or holdout rows:
+
+```powershell
+backend\.venv\Scripts\python.exe -m ai_models.calibration `
+  --model ai_models/artifacts/baseline-v2.json `
+  --dataset validation/prepared `
+  --output ai_models/artifacts/baseline-v2-policy.json `
+  --false-positive-cost 2 `
+  --false-negative-cost 5
+```
+
+Configure `MODEL_POLICY_PATH` only after reviewing the external evaluation and
+cost assumptions. The API exposes both the raw uncalibrated synthetic-audio
+score and the separately calibrated review score; neither is a fraud
+probability.

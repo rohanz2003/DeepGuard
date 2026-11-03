@@ -19,6 +19,8 @@ from pathlib import Path
 
 from werkzeug.utils import secure_filename
 
+from .audio_quality import analyze_audio_quality
+
 
 ALLOWED_MIMES = {"audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave"}
 ALLOWED_MP3_MIMES = {
@@ -51,6 +53,11 @@ class AudioMetadata:
     # retained playback. For WAV this equals ``audio_bytes``; for MP3 it keeps
     # the compressed source while inference receives the decoded WAV.
     original_bytes: bytes = b""
+    # Derived quality metrics contain no raw audio content.
+    audio_quality: dict | None = None
+    # Request-level transcription preferences are added before queue admission.
+    transcribe_audio: bool = False
+    transcript_language: str = "auto"
 
 
 class AudioValidationError(ValueError):
@@ -161,6 +168,7 @@ def _validate_wav_payload(
         duration_seconds=duration,
         audio_bytes=payload,
         original_bytes=payload if original_bytes is None else original_bytes,
+        audio_quality=analyze_audio_quality(payload),
     )
 
 

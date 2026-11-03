@@ -68,17 +68,32 @@ export function isAudioRetained(scan = {}) {
 
 export function normalizeScan(scan = {}) {
   const source = scan && typeof scan === "object" ? scan : {};
+  const rawQuality = source.audio_quality && typeof source.audio_quality === "object" ? source.audio_quality : {};
   const normalized = {
     ...source,
     status: source.status || "unavailable",
     deepfake_status: source.deepfake_status || "inconclusive",
     confidence: source.confidence ?? null,
+    synthetic_audio_score: source.synthetic_audio_score ?? source.confidence ?? null,
+    calibrated_score: source.calibrated_score ?? null,
+    score_type: source.score_type || "uncalibrated_synthetic_audio_score",
+    audio_quality: {
+      ...rawQuality,
+      reasons: Array.isArray(rawQuality.reasons)
+        ? rawQuality.reasons.filter((reason) => typeof reason === "string")
+        : [],
+    },
+    segment_scores: Array.isArray(source.segment_scores)
+      ? source.segment_scores.filter((segment) => segment && typeof segment === "object")
+      : [],
     scam_status: source.scam_status || "unavailable",
     scam_score: source.scam_score ?? null,
     scam_categories: Array.isArray(source.scam_categories)
       ? source.scam_categories.filter((category) => typeof category === "string" && category.trim())
       : [],
     scam_explanation: source.scam_explanation || "",
+    transcript_language: source.transcript_language || "auto",
+    transcript_source: source.transcript_source || "manual",
     model_version: source.model_version || "not-configured",
     error_code: typeof source.error_code === "string" ? source.error_code : "",
     error_explanation: typeof source.error_explanation === "string" ? source.error_explanation : "",

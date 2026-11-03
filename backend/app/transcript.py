@@ -12,6 +12,7 @@ from typing import Any
 
 
 MAX_TRANSCRIPT_CHARS = 12_000
+SUPPORTED_TRANSCRIPT_LANGUAGES = ("auto", "en", "hi", "es")
 
 SCAM_CATEGORIES = (
     "financial_request",
@@ -139,12 +140,47 @@ _CATEGORY_EXPLANATIONS = {
     "remote_access_request": "requests to install remote software or share device control",
 }
 
+_MULTILINGUAL_CATEGORY_PATTERNS: dict[str, dict[str, tuple[re.Pattern[str], ...]]] = {
+    "hi": {
+        "financial_request": (re.compile(r"(?:पैसे|रुपये|भुगतान|पैसा).{0,80}(?:भेज|दे|ट्रांसफर|जमा)", re.IGNORECASE),),
+        "credential_request": (re.compile(r"(?:पासवर्ड|ओटीपी|पिन|कोड|खाता).{0,60}(?:बताएं|दें|भेजें|साझा)", re.IGNORECASE),),
+        "urgency_or_threat": (re.compile(r"(?:तुरंत|अभी|जल्दी|आखिरी चेतावनी|बंद कर दिया जाएगा|निलंबित)", re.IGNORECASE),),
+        "impersonation": (re.compile(r"(?:बैंक|पुलिस|सरकार|कर विभाग|सुरक्षा विभाग).{0,60}(?:से बोल|कॉल|अधिकारी)", re.IGNORECASE),),
+        "remote_access_request": (re.compile(r"(?:एनीडेस्क|रिमोट एक्सेस|स्क्रीन शेयर|कंप्यूटर का नियंत्रण)", re.IGNORECASE),),
+    },
+    "es": {
+        "financial_request": (
+            re.compile(r"\b(?:dinero|pago|transferencia|tarjeta|criptomoneda)\b.{0,80}\b(?:env[ií]a(?:me|nos)?|paga|transfiere|compra)\b", re.IGNORECASE),
+            re.compile(r"\b(?:env[ií]a(?:me|nos)?|paga|transfiere|compra)\b.{0,80}\b(?:dinero|pago|transferencia|tarjeta|criptomoneda)\b", re.IGNORECASE),
+        ),
+        "credential_request": (re.compile(r"\b(?:contraseña|clave|pin|código|numero de cuenta)\b.{0,60}\b(?:dime|da|comparte|proporciona)\b", re.IGNORECASE),),
+        "urgency_or_threat": (re.compile(r"\b(?:urgente|inmediatamente|ahora|última advertencia|suspender|cerrar)\b", re.IGNORECASE),),
+        "impersonation": (re.compile(r"\b(?:banco|policía|gobierno|hacienda|soporte)\b.{0,60}\b(?:llama|agente|oficial)\b", re.IGNORECASE),),
+        "remote_access_request": (re.compile(r"\b(?:anydesk|acceso remoto|compartir pantalla|controlar tu dispositivo)\b", re.IGNORECASE),),
+    },
+}
 
-def _unavailable_result() -> dict[str, Any]:
+
+def detect_language(transcript: str) -> str:
+    """Return a conservative language hint; unknown text remains ``auto``."""
+
+    if re.search(r"[\u0900-\u097f]", transcript):
+        return "hi"
+    lowered = transcript.casefold()
+    if re.search(r"\b(?:el|la|que|dinero|banco|contraseña|urgente)\b", lowered):
+        return "es"
+    if re.search(r"\b(?:the|your|account|please|send|verify)\b", lowered):
+        return "en"
+    return "auto"
+
+
+def _unavailable_result(language: str = "auto", source: str = "manual") -> dict[str, Any]:
     return {
         "scam_status": "unavailable",
         "scam_score": None,
         "scam_categories": [],
+        "transcript_language": language,
+        "transcript_source": source,
         "scam_explanation": (
             "No transcript was provided, so local scam-language analysis is unavailable."
         ),
@@ -179,7 +215,11 @@ def _validate_transcript(transcript: str | None, consented: bool | None) -> None
 
 
 def analyze_transcript(
-    transcript: str | None, *, consented: bool | None = None
+    transcript: str | None,
+    *,
+    consented: bool | None = None,
+    language: str = "auto",
+    source: str = "manual",
 ) -> dict[str, Any]:
     """Analyze a bounded transcript and return only fixed scam metadata.
 
@@ -188,19 +228,24 @@ def analyze_transcript(
     without affirmative consent before any matching occurs.
     """
 
+    if language not in SUPPORTED_TRANSCRIPT_LANGUAGES:
+        raise TranscriptValidationError("The transcript language is unsupported.")
     if transcript is None:
-        return _unavailable_result()
+        return _unavailable_result(language, source)
     if not isinstance(transcript, str):
         raise TranscriptValidationError("The transcript must be text.")
     _validate_transcript(transcript, consented)
     if not transcript.strip():
-        return _unavailable_result()
+        return _unavailable_result(language, source)
 
     normalized = normalize_transcript(transcript)
+    resolved_language = detect_language(normalized) if language == "auto" else language
+    language_patterns = _MULTILINGUAL_CATEGORY_PATTERNS.get(resolved_language, {})
     categories = [
         category
         for category in SCAM_CATEGORIES
         if any(pattern.search(normalized) for pattern in _CATEGORY_PATTERNS[category])
+        or any(pattern.search(normalized) for pattern in language_patterns.get(category, ()))
     ]
     score = round(len(categories) / len(SCAM_CATEGORIES), 4)
 
@@ -228,6 +273,8 @@ def analyze_transcript(
         "scam_status": status,
         "scam_score": score,
         "scam_categories": categories,
+        "transcript_language": resolved_language,
+        "transcript_source": source,
         "scam_explanation": explanation,
     }
 
@@ -235,8 +282,10 @@ def analyze_transcript(
 __all__ = [
     "MAX_TRANSCRIPT_CHARS",
     "SCAM_CATEGORIES",
+    "SUPPORTED_TRANSCRIPT_LANGUAGES",
     "TranscriptValidationError",
     "analyze_transcript",
+    "detect_language",
     "normalize_transcript",
     "unavailable_scam_result",
 ]

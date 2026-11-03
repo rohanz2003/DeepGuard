@@ -34,6 +34,19 @@ firebase deploy --only firestore:rules --project your-firebase-project-id
 The project must already have a Cloud Firestore database. The command deploys
 only rules and does not change application code or data.
 
+## Configure metadata TTL
+
+Configure a Firestore TTL policy for the `scans` collection group using the
+`expires_at` field:
+
+```powershell
+gcloud firestore fields ttls update expires_at --collection-group=scans --enable-ttl --project your-firebase-project-id
+```
+
+TTL cleanup is eventual. The API continues to enforce `expires_at` during list,
+detail, and playback reads, while the scheduled GridFS maintenance command
+removes expired retained-audio objects independently.
+
 ## Test locally with the Firestore emulator
 
 From the repository root, start the emulator with a non-production project ID:

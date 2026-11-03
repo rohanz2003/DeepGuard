@@ -15,11 +15,13 @@ import json
 import math
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .transcript import unavailable_scam_result
+from .audio_quality import segment_wavs
+from .transcript import analyze_transcript, unavailable_scam_result
 
 
 ARTIFACT_SCHEMA = "deepguard-model"
@@ -222,6 +224,11 @@ def unavailable_result(version: str = "not-configured") -> dict[str, Any]:
         "status": "unavailable",
         "deepfake_status": "inconclusive",
         "confidence": None,
+        "synthetic_audio_score": None,
+        "calibrated_score": None,
+        "score_type": "uncalibrated_synthetic_audio_score",
+        "audio_quality": {},
+        "segment_scores": [],
         "model_version": version,
         "explanation": (
             "Upload validated successfully, but no valid inference model is available. "
@@ -277,9 +284,40 @@ class ModelInferenceService:
     def __init__(self, settings: dict[str, Any], loader: JsonModelArtifactLoader | None = None):
         self.threshold = float(settings.get("MODEL_THRESHOLD", 0.5))
         self.loader = loader or JsonModelArtifactLoader(settings.get("MODEL_ARTIFACT_PATH", ""))
+        self.policy = self._load_policy(settings.get("MODEL_POLICY_PATH", ""))
+        self.quality_enabled = bool(settings.get("AUDIO_QUALITY_ENABLED", True))
+        # Direct adapter users/tests that provide only a model threshold retain
+        # the small legacy contract; app configuration explicitly enables it.
+        self.segment_enabled = bool(settings.get("SEGMENT_ANALYSIS_ENABLED", False))
+        self.transcription_enabled = bool(settings.get("TRANSCRIPTION_ENABLED", False))
+        self.transcriber = settings.get("TRANSCRIPTION_SERVICE")
+        self.metrics = settings.get("METRICS")
         load = getattr(self.loader, "load", None)
         if callable(load):
             load()
+        if (
+            self.policy
+            and self.loader.artifact is not None
+            and self.policy.get("model_version") != self.loader.artifact.model_version
+        ):
+            self.policy = None
+
+    @staticmethod
+    def _load_policy(path: str | Path) -> dict[str, Any] | None:
+        if not str(path or "").strip():
+            return None
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                policy = json.load(stream)
+            if (
+                policy.get("schema") != "deepguard-score-policy"
+                or policy.get("version") != 1
+                or policy.get("calibration", {}).get("method") != "platt-v1"
+            ):
+                return None
+            return policy
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def readiness(self) -> dict[str, Any]:
         if not self.loader.ready:
@@ -288,41 +326,164 @@ class ModelInferenceService:
             "status": "ready",
             "version": self.loader.artifact.model_version,
             "research_only": True,
-            "score_type": "uncalibrated_synthetic_audio_score",
+            "score_type": "calibrated_synthetic_audio_score" if self.policy else "uncalibrated_synthetic_audio_score",
+            "calibration": bool(self.policy),
+            "quality_checks": self.quality_enabled,
+            "segment_analysis": self.segment_enabled,
+            "transcription": self.transcription_enabled,
         }
+
+    def _predict_bytes(self, audio_bytes: bytes, artifact: ModelArtifact) -> float:
+        features = _call_with_optional_contract(self.loader.preprocessor, audio_bytes, artifact)
+        predictor = getattr(self.loader.model, "predict_proba", None)
+        if not callable(predictor):
+            predictor = getattr(self.loader.model, artifact.predictor, None)
+        if not callable(predictor):
+            module = _import_ai_models(artifact.model_module)
+            predictor = getattr(module, artifact.predictor)
+        return _score_from_prediction(_call_with_optional_contract(predictor, features, artifact))
+
+    def _calibrate(self, score: float) -> float | None:
+        if not self.policy:
+            return None
+        try:
+            from ai_models.calibration import apply_calibrator
+
+            calibrated = apply_calibrator(score, self.policy["calibration"])
+            item = calibrated.item() if hasattr(calibrated, "item") else calibrated
+            return round(float(item), 4)
+        except (ImportError, KeyError, TypeError, ValueError, IndexError):
+            return None
+
+    def _transcribe(self, metadata) -> dict[str, Any] | None:
+        if not self.transcription_enabled or not getattr(metadata, "transcribe_audio", False):
+            return None
+        transcriber = self.transcriber
+        if not callable(transcriber):
+            return {
+                "scam_status": "unavailable",
+                "scam_score": None,
+                "scam_categories": [],
+                "transcript_language": getattr(metadata, "transcript_language", "auto"),
+                "transcript_source": "local_unavailable",
+                "scam_explanation": "Local speech-to-text is not configured; no transcript signal was generated.",
+            }
+        try:
+            result = transcriber(
+                metadata.audio_bytes,
+                language=getattr(metadata, "transcript_language", "auto"),
+            )
+            if not isinstance(result, dict):
+                return None
+            text = result.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return {
+                    **unavailable_scam_result(),
+                    "transcript_language": result.get("language", "auto"),
+                    "transcript_source": "local",
+                    "scam_explanation": "Local speech-to-text returned no usable transcript.",
+                }
+            return analyze_transcript(
+                text,
+                consented=True,
+                language=result.get("language", getattr(metadata, "transcript_language", "auto")),
+                source="local",
+            )
+        except Exception:
+            return {
+                **unavailable_scam_result(),
+                "transcript_language": getattr(metadata, "transcript_language", "auto"),
+                "transcript_source": "local_error",
+                "scam_explanation": "Local speech-to-text could not complete; no transcript signal was generated.",
+            }
+
+    def _record_metrics(self, started: float, outcome: str, model_version: str) -> None:
+        if self.metrics is None:
+            return
+        try:
+            self.metrics.observe(
+                "inference_seconds",
+                time.perf_counter() - started,
+                outcome=outcome,
+                model=model_version,
+            )
+            self.metrics.increment("inference_total", outcome=outcome, model=model_version)
+        except Exception:
+            pass
 
     def analyze(self, metadata):
         if not self.loader.ready:
             return unavailable_result()
         artifact = self.loader.artifact
+        started = time.perf_counter()
+        quality = getattr(metadata, "audio_quality", None) or {}
+        if self.quality_enabled and quality.get("status") == "insufficient_evidence":
+            self._record_metrics(started, "insufficient_evidence", artifact.model_version)
+            return {
+                "status": "completed",
+                "deepfake_status": "insufficient_evidence",
+                "confidence": None,
+                "synthetic_audio_score": None,
+                "calibrated_score": None,
+                "score_type": "uncalibrated_synthetic_audio_score",
+                "model_version": artifact.model_version,
+                "audio_quality": quality,
+                "segment_scores": [],
+                "explanation": (
+                    "The recording did not contain enough usable speech evidence for a voice score. "
+                    "No authenticity claim was generated."
+                ),
+                **(self._transcribe(metadata) or unavailable_scam_result()),
+            }
         try:
-            features = _call_with_optional_contract(self.loader.preprocessor, metadata.audio_bytes, artifact)
-            predictor = getattr(self.loader.model, "predict_proba", None)
-            if not callable(predictor):
-                predictor = getattr(self.loader.model, artifact.predictor, None)
-            if not callable(predictor):
-                module = _import_ai_models(artifact.model_module)
-                predictor = getattr(module, artifact.predictor)
-            prediction = _call_with_optional_contract(predictor, features, artifact)
-            score = _score_from_prediction(prediction)
+            score = self._predict_bytes(metadata.audio_bytes, artifact)
+            segment_scores = []
+            if self.segment_enabled:
+                for start, end, segment in segment_wavs(metadata.audio_bytes):
+                    segment_score = self._predict_bytes(segment, artifact)
+                    segment_scores.append({
+                        "start_seconds": start,
+                        "end_seconds": end,
+                        "synthetic_audio_score": round(segment_score, 4),
+                        "status": _risk_status(segment_score, self.threshold),
+                    })
         except TransientInferenceError:
             # The scan worker owns the retry policy.  Do not turn this
             # dedicated signal into an inconclusive successful result.
             raise
         except Exception:
             # Inference failures fail closed and never expose model internals.
+            self._record_metrics(started, "failed", artifact.model_version)
             return unavailable_result(artifact.model_version)
         status = _risk_status(score, self.threshold)
+        calibrated = self._calibrate(score)
+        if self.policy and calibrated is not None:
+            policy_threshold = self.policy.get("decision", {}).get("threshold")
+            if isinstance(policy_threshold, (int, float)):
+                status = _risk_status(calibrated, float(policy_threshold))
+        transcript = self._transcribe(metadata)
+        explanation = (
+            "Research baseline only: this uncalibrated synthetic-audio score is not the probability "
+            "that a caller is fraudulent and is not proof that a voice is fake. "
+            f"The raw synthetic-audio score was {score:.3f}; the configured threshold was "
+            f"{self.threshold:.3f}."
+        )
+        if calibrated is not None:
+            explanation += " A separately fitted calibration policy supplied a review score; it is not fraud probability."
+        if quality.get("status") == "review":
+            explanation += " Audio-quality checks indicate that human review should consider recording quality."
+        self._record_metrics(started, "completed", artifact.model_version)
         return {
             "status": "completed",
             "deepfake_status": status,
             "confidence": round(score, 4),
+            "synthetic_audio_score": round(score, 4),
+            "calibrated_score": calibrated,
+            "score_type": "calibrated_synthetic_audio_score" if calibrated is not None else "uncalibrated_synthetic_audio_score",
             "model_version": artifact.model_version,
-            "explanation": (
-                "Research baseline only: this uncalibrated audio score is not the probability "
-                "that a caller is fraudulent and is not proof that a voice is fake. "
-                f"The synthetic-audio model score was {score:.3f}; the configured threshold is "
-                f"{self.threshold:.3f}."
-            ),
-            **unavailable_scam_result(),
+            "audio_quality": quality,
+            "segment_scores": segment_scores,
+            "inference_ms": round((time.perf_counter() - started) * 1000.0, 3),
+            "explanation": explanation,
+            **(transcript or unavailable_scam_result()),
         }

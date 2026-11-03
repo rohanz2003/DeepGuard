@@ -31,7 +31,7 @@ retention fields `audio_retained`, `audio_retention_days`, `audio_expires_at`,
 and `audio_storage`. `audio_storage_id` is never returned by the API. Set
 `MONGODB_URI`, `MONGODB_DATABASE`, and `MONGODB_GRIDFS_BUCKET` before accepting
 retained uploads; missing or unavailable MongoDB produces a clear HTTP 503 only
-for a retention request. Normal uploads do not require MongoDB. `expires_at` is written
+for a retention request when using the local queue. Normal local-queue uploads do not require MongoDB. Redis durable-queue uploads do require GridFS because the normalized audio is stored temporarily for the dedicated worker. `expires_at` is written
 for a 30-day default retention period and expired documents are removed when
 read. A separate Firestore TTL policy should be configured operationally for
 eventual cleanup.
@@ -66,12 +66,19 @@ score is an uncalibrated synthetic-audio indicator: it is mapped to `low`,
 `review`, or `high` around the configured threshold, not a probability of fraud.
 Model health explicitly returns `research_only: true`.
 
+An optional `MODEL_POLICY_PATH` points to a separately generated calibration
+policy. The API keeps `synthetic_audio_score` (raw) and `calibrated_score`
+(policy output) separate, records `score_type`, and applies the policy's
+cost-selected threshold only after the policy model version matches the loaded
+artifact. Both values remain review evidence, never fraud probabilities.
+
 ## Local transcript analysis
 
 `POST /api/scans` accepts optional `transcript` and `transcript_consent=true`
 multipart fields. Non-empty transcript text without affirmative consent, or text
 over 12,000 characters, returns HTTP 400. The local analyzer in
-`backend/app/transcript.py` uses five fixed categories and returns only:
+`backend/app/transcript.py` uses five fixed categories with English, Hindi, and
+Spanish rule packs and returns only:
 
 - `scam_status`
 - `scam_score`
@@ -83,6 +90,13 @@ transparent category-match heuristic, not a calibrated probability. It is kept
 separate from `deepfake_status` and `confidence`; the API never combines the two.
 When no transcript is supplied, scam status is `unavailable`.
 
+The optional `TRANSCRIPTION_ENABLED=true` path uses a local Whisper-compatible
+model selected by `TRANSCRIPTION_MODEL_PATH`. It requires explicit frontend
+consent, never calls a remote speech API, and passes transient text directly to
+the local analyzer without storing it. Install and validate the optional
+`faster-whisper` dependency separately; it is intentionally not part of the
+default API image because local model size and hardware vary.
+
 `POST /api/scans` returns HTTP `202` with a top-level `status: "pending"` after
 synchronous WAV/MP3/transcript validation and metadata admission. The record then
 transitions through `pending` → `processing` → `completed` or `failed`.
@@ -92,11 +106,48 @@ fields; failed records expose only a bounded `error_code` and safe
 `SCAN_MAX_ATTEMPTS`; validation and consent errors never enter the worker.
 
 The worker is a bounded in-process `ThreadPoolExecutor` with configurable
-worker count and queue capacity. It prevents duplicate processing for a scan
-within one process and releases raw audio after the worker finishes. This is
-not a durable cross-process queue: queued work is lost on process exit and
-each Gunicorn process has its own manager. Use a durable queue before relying
-on this lifecycle across restarts or multiple processes.
+worker count and queue capacity for local development. Production can use the
+Redis durable queue described below; it prevents duplicate admission, stores
+only temporary audio pointers outside Redis, supports crash recovery, retry
+backoff, dead-letter monitoring, and releases temporary audio after processing.
 
 The limiter is intentionally process-local and bounded. Deployments with more
 than one worker or instance must also enforce limits at a shared gateway.
+
+## Production queue and observability
+
+Set these values in the deployment environment to use the durable queue:
+
+```dotenv
+QUEUE_BACKEND=redis
+QUEUE_REDIS_URL=redis://redis.internal:6379/0
+REDIS_URL=redis://redis.internal:6379/0
+RATE_LIMIT_BACKEND=redis
+QUEUE_NAME=deepguard-scans
+```
+
+The API writes normalized inference audio to the configured MongoDB GridFS
+store with a short expiry and places only a private pointer in Redis. Start one
+or more dedicated workers with:
+
+```sh
+python -m app.queue_worker
+```
+
+The worker uses a Redis processing list for crash recovery, exponential retry
+backoff for transient inference failures, and a dead-letter list for malformed
+or unavailable queue payloads. `/api/health` reports queue depth and
+`GET /api/metrics` exposes authenticated operational counters/timers.
+
+The local `ThreadPoolExecutor` remains the default for development and unit
+tests. Do not run multiple production Gunicorn workers with `QUEUE_BACKEND=local`.
+
+Audio quality is checked before model scoring. Silent or unusable recordings
+return `deepfake_status=insufficient_evidence` with no score. Usable recordings
+include bounded five-second segment signals when segment analysis is enabled.
+Quality diagnostics and segment scores contain derived metadata only.
+
+Optional local speech-to-text is enabled with `TRANSCRIPTION_ENABLED=true` and a
+local `TRANSCRIPTION_MODEL_PATH`. The frontend requires a separate explicit
+checkbox, and transcript text is analyzed in memory using the local multilingual
+rules (`en`, `hi`, and `es`) and is never stored.

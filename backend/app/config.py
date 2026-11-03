@@ -5,6 +5,7 @@ settings construction explicit prevents Firebase credentials from being read
 before local development environment files have been applied.
 """
 
+import math
 import os
 from pathlib import Path
 
@@ -41,6 +42,12 @@ class Config:
             if not candidate.is_absolute():
                 candidate = Path(__file__).resolve().parents[1] / candidate
             artifact_path = str(candidate.resolve())
+        policy_path = os.getenv("MODEL_POLICY_PATH", "").strip()
+        if policy_path:
+            candidate = Path(policy_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = Path(__file__).resolve().parents[1] / candidate
+            policy_path = str(candidate.resolve())
 
         return {
             "ENVIRONMENT": environment,
@@ -70,7 +77,10 @@ class Config:
             # An empty path deliberately means that inference is unavailable.
             # The API must remain usable when the optional ML stack is absent.
             "MODEL_ARTIFACT_PATH": artifact_path,
+            "MODEL_POLICY_PATH": policy_path,
             "MODEL_THRESHOLD": threshold,
+            "MODEL_FALSE_POSITIVE_COST": float(os.getenv("MODEL_FALSE_POSITIVE_COST", "1")),
+            "MODEL_FALSE_NEGATIVE_COST": float(os.getenv("MODEL_FALSE_NEGATIVE_COST", "1")),
             "MODEL_VERSION": "not-configured",
             "CORS_ORIGINS": [
                 origin.strip()
@@ -90,6 +100,20 @@ class Config:
             "SCAN_MAX_WORKERS": int(os.getenv("SCAN_MAX_WORKERS", "2")),
             "SCAN_MAX_QUEUE": int(os.getenv("SCAN_MAX_QUEUE", "8")),
             "SCAN_MAX_ATTEMPTS": int(os.getenv("SCAN_MAX_ATTEMPTS", "2")),
+            "QUEUE_BACKEND": os.getenv("QUEUE_BACKEND", "local").strip().lower(),
+            "QUEUE_REDIS_URL": os.getenv("QUEUE_REDIS_URL", "").strip(),
+            "QUEUE_NAME": os.getenv("QUEUE_NAME", "deepguard-scans").strip(),
+            "QUEUE_RETRY_BACKOFF_SECONDS": float(os.getenv("QUEUE_RETRY_BACKOFF_SECONDS", "2")),
+            "REDIS_URL": os.getenv("REDIS_URL", "").strip(),
+            "RATE_LIMIT_BACKEND": os.getenv("RATE_LIMIT_BACKEND", "local").strip().lower(),
+            "METRICS_ENABLED": _bool("METRICS_ENABLED", True),
+            "AUDIO_QUALITY_ENABLED": _bool("AUDIO_QUALITY_ENABLED", True),
+            "SEGMENT_ANALYSIS_ENABLED": _bool("SEGMENT_ANALYSIS_ENABLED", True),
+            "TRANSCRIPTION_ENABLED": _bool("TRANSCRIPTION_ENABLED", False),
+            "TRANSCRIPTION_MODEL_PATH": os.getenv("TRANSCRIPTION_MODEL_PATH", "").strip(),
+            "TRANSCRIPTION_DEVICE": os.getenv("TRANSCRIPTION_DEVICE", "cpu").strip(),
+            "TRANSCRIPTION_COMPUTE_TYPE": os.getenv("TRANSCRIPTION_COMPUTE_TYPE", "int8").strip(),
+            "RETENTION_CLEANUP_BATCH_SIZE": int(os.getenv("RETENTION_CLEANUP_BATCH_SIZE", "100")),
         }
 
     @staticmethod
@@ -114,6 +138,13 @@ class Config:
             raise ValueError("RETENTION_DAYS must be within 1 to 365 days.")
         if not 0 <= settings["MODEL_THRESHOLD"] <= 1:
             raise ValueError("MODEL_THRESHOLD must be between 0 and 1.")
+        if (
+            not math.isfinite(settings["MODEL_FALSE_POSITIVE_COST"])
+            or not math.isfinite(settings["MODEL_FALSE_NEGATIVE_COST"])
+            or settings["MODEL_FALSE_POSITIVE_COST"] < 0
+            or settings["MODEL_FALSE_NEGATIVE_COST"] < 0
+        ):
+            raise ValueError("Model classification costs must be non-negative.")
         if not all(0 < settings[key] <= 10000 for key in (
             "RATE_LIMIT_PER_MINUTE", "UPLOAD_RATE_LIMIT_PER_MINUTE"
         )):
@@ -124,3 +155,11 @@ class Config:
             raise ValueError("SCAN_MAX_QUEUE must be between 0 and 1000.")
         if not 1 <= settings["SCAN_MAX_ATTEMPTS"] <= 5:
             raise ValueError("SCAN_MAX_ATTEMPTS must be between 1 and 5.")
+        if settings["QUEUE_BACKEND"] not in {"local", "redis"}:
+            raise ValueError("QUEUE_BACKEND must be local or redis.")
+        if settings["RATE_LIMIT_BACKEND"] not in {"local", "redis"}:
+            raise ValueError("RATE_LIMIT_BACKEND must be local or redis.")
+        if not math.isfinite(settings["QUEUE_RETRY_BACKOFF_SECONDS"]) or settings["QUEUE_RETRY_BACKOFF_SECONDS"] < 0:
+            raise ValueError("QUEUE_RETRY_BACKOFF_SECONDS must be non-negative.")
+        if settings["RETENTION_CLEANUP_BATCH_SIZE"] < 1:
+            raise ValueError("RETENTION_CLEANUP_BATCH_SIZE must be positive.")

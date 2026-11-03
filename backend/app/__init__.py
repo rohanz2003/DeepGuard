@@ -9,10 +9,12 @@ from .config import Config
 from .audio_store import MongoGridFSAudioStore
 from .firebase import FirebaseServices
 from .inference import ModelInferenceService
-from .jobs import ScanJobManager
-from .rate_limit import RateLimiter
+from .jobs import RedisScanJobManager, ScanJobManager
+from .observability import Metrics, configure_logging
+from .rate_limit import RedisRateLimiter, RateLimiter
 from .request import InMemoryRequest
 from .routes import api
+from .transcription import LocalSpeechToText
 
 
 def create_app(test_config=None):
@@ -24,6 +26,7 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
     Config.validate(app.config)
+    configure_logging()
 
     app.config["MAX_CONTENT_LENGTH"] = app.config["MAX_REQUEST_BYTES"]
     app.config["MAX_FORM_MEMORY_SIZE"] = 128 * 1024
@@ -31,6 +34,7 @@ def create_app(test_config=None):
     # retention preference. Keep a small margin for future non-file fields.
     app.config["MAX_FORM_PARTS"] = 8
     app.extensions["firebase"] = FirebaseServices(app.config)
+    app.extensions["metrics"] = Metrics()
     injected_audio_store = app.config.get("AUDIO_STORE")
     if injected_audio_store is None:
         injected_audio_store = app.config.get("SCAN_AUDIO_STORE")
@@ -50,10 +54,24 @@ def create_app(test_config=None):
         )
     )
     app.extensions["audio_storage"] = app.extensions["audio_store"]
+    if "TRANSCRIPTION_SERVICE" not in app.config:
+        app.config["TRANSCRIPTION_SERVICE"] = (
+            LocalSpeechToText(
+                app.config.get("TRANSCRIPTION_MODEL_PATH", ""),
+                device=app.config.get("TRANSCRIPTION_DEVICE", "cpu"),
+                compute_type=app.config.get("TRANSCRIPTION_COMPUTE_TYPE", "int8"),
+            )
+            if app.config.get("TRANSCRIPTION_ENABLED")
+            else None
+        )
     app.extensions["inference"] = (
         app.config["INFERENCE_SERVICE"]
         if "INFERENCE_SERVICE" in app.config
-        else ModelInferenceService(app.config)
+        else ModelInferenceService({
+            **app.config,
+            "TRANSCRIPTION_SERVICE": app.config.get("TRANSCRIPTION_SERVICE"),
+            "METRICS": app.extensions["metrics"],
+        })
     )
 
     def repository_provider():
@@ -68,10 +86,20 @@ def create_app(test_config=None):
     injected_executor = app.config.get("SCAN_JOB_EXECUTOR")
     if injected_executor is None:
         injected_executor = app.config.get("JOB_EXECUTOR")
-    app.extensions["scan_jobs"] = (
-        injected_manager
-        if injected_manager is not None
-        else ScanJobManager(
+    if injected_manager is not None:
+        app.extensions["scan_jobs"] = injected_manager
+    elif app.config["QUEUE_BACKEND"] == "redis":
+        app.extensions["scan_jobs"] = RedisScanJobManager(
+            repository_provider,
+            app.extensions["inference"],
+            app.extensions["audio_store"],
+            redis_url=app.config["QUEUE_REDIS_URL"] or app.config["REDIS_URL"],
+            queue_name=app.config["QUEUE_NAME"],
+            max_attempts=app.config["SCAN_MAX_ATTEMPTS"],
+            retry_backoff_seconds=app.config["QUEUE_RETRY_BACKOFF_SECONDS"],
+        )
+    else:
+        app.extensions["scan_jobs"] = ScanJobManager(
             repository_provider,
             app.extensions["inference"],
             executor=injected_executor,
@@ -79,11 +107,14 @@ def create_app(test_config=None):
             max_queue=app.config["SCAN_MAX_QUEUE"],
             max_attempts=app.config["SCAN_MAX_ATTEMPTS"],
         )
-    )
     # Keep a descriptive alias for integrations that refer to the boundary as
     # a job manager rather than a scan extension.
     app.extensions["job_manager"] = app.extensions["scan_jobs"]
-    app.extensions["rate_limiter"] = RateLimiter()
+    app.extensions["rate_limiter"] = (
+        RedisRateLimiter(app.config["REDIS_URL"])
+        if app.config["RATE_LIMIT_BACKEND"] == "redis"
+        else RateLimiter()
+    )
     CORS(
         app,
         resources={r"/api/*": {"origins": app.config["CORS_ORIGINS"]}},
@@ -108,6 +139,16 @@ def create_app(test_config=None):
                 "health_url": "/api/health",
             }
         )
+
+    @app.after_request
+    def request_metrics(response):
+        app.extensions["metrics"].increment(
+            "http_requests_total",
+            method=flask_request.method,
+            path=flask_request.path,
+            status=str(response.status_code),
+        )
+        return response
 
     @app.after_request
     def security_headers(response):

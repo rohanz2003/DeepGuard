@@ -6,3 +6,4 @@ numpy==2.5.4
 gunicorn==23.0.0
 pymongo==4.15.5
 imageio-ffmpeg==0.6.0
+redis==5.2.1

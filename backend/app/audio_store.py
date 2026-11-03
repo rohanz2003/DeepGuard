@@ -1,13 +1,14 @@
-"""Optional, lazy MongoDB GridFS storage for retained audio.
+"""Optional, lazy MongoDB GridFS storage for retained and queued audio.
 
-The scan worker continues to receive validated audio bytes in memory.  This
-module is only consulted when a caller explicitly asks to retain a recording;
-constructing the store does not import or connect to MongoDB.
+The local scan worker continues to receive validated audio bytes in memory.
+The Redis-backed worker uses this store for temporary normalized audio pointers,
+while explicit playback retention uses a separate pointer in the scan record.
+Constructing the store does not import or connect to MongoDB.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -20,11 +21,12 @@ class AudioStoreNotFound(LookupError):
 
 
 class MongoGridFSAudioStore:
-    """A lazy GridFS adapter.
+    """A lazy GridFS adapter for temporary jobs and retained playback.
 
     ``pymongo`` and ``gridfs`` are imported only on the first operation.  A
-    missing URI/database/bucket therefore has no effect on ordinary uploads,
-    health checks, or application startup.
+    missing URI/database/bucket therefore has no effect on local ordinary
+    uploads, health checks, or application startup. Redis durable jobs require
+    the store when they are admitted.
 
     The small ``upload``/``open``/``delete`` surface is intentionally easy to
     replace with an in-memory fake in API tests.
@@ -150,6 +152,34 @@ class MongoGridFSAudioStore:
                 return
             raise AudioStoreUnavailable(
                 "MongoDB GridFS audio retention is unavailable."
+            ) from exc
+
+    def delete_expired(self, *, now: datetime | None = None, limit: int = 100) -> int:
+        """Delete temporary/retained objects whose metadata expiry has passed."""
+
+        if limit < 1:
+            raise ValueError("cleanup limit must be positive")
+        current = now or datetime.now(timezone.utc)
+        try:
+            bucket = self._gridfs()
+            collection = getattr(bucket, "_GridFS__files", None)
+            if collection is None:
+                collection = getattr(bucket, "_files", None)
+            if collection is None:
+                raise AudioStoreUnavailable("MongoDB GridFS cleanup is unavailable.")
+            expired = collection.find(
+                {"metadata.deepguard_expires_at": {"$lte": current.isoformat()}}
+            ).limit(limit)
+            deleted = 0
+            for document in expired:
+                bucket.delete(document["_id"])
+                deleted += 1
+            return deleted
+        except AudioStoreUnavailable:
+            raise
+        except Exception as exc:
+            raise AudioStoreUnavailable(
+                "MongoDB GridFS audio retention cleanup is unavailable."
             ) from exc
 
 

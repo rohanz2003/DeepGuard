@@ -19,6 +19,7 @@ from typing import Any
 
 import numpy as np
 
+from .augment import AUGMENTATION_NAMES, augment_wav, augmentation_metadata
 from .model import (
     GROUPING_VERSIONS, LABEL_MAPPING, MODEL_VERSION, PCM_HASH_STRATEGY,
     LogisticRegressionModel, dataset_fingerprint, fingerprint_payload,
@@ -394,16 +395,35 @@ def _counts(records: list[DatasetRecord]) -> dict[str, int]:
 
 def train_dataset(
     dataset_dir: str | Path, *, seed: int = 1337, test_size: float = 0.2,
-    group_by: str = "content",
+    group_by: str = "content", augmentations: list[str] | None = None,
 ) -> tuple[LogisticRegressionModel, list[DatasetRecord], list[DatasetRecord]]:
     records = collect_dataset(dataset_dir)
     unique, grouping = prepare_records(records, group_by=group_by)
     train, test = _split_prepared(unique, seed=seed, test_size=test_size)
+    selected_augmentations = list(augmentations or [])
+    if any(kind not in AUGMENTATION_NAMES for kind in selected_augmentations):
+        raise DatasetError("unsupported training augmentation")
     try:
-        features = np.vstack([extract_features(record.audio_bytes) for record in train])
+        feature_rows = [extract_features(record.audio_bytes) for record in train]
+        # Augmented copies are deliberately generated only from the training
+        # membership. The exact holdout remains untouched for evaluation.
+        for record_index, record in enumerate(train):
+            original = record.audio_bytes
+            for augmentation_index, kind in enumerate(selected_augmentations):
+                augmented = augment_wav(
+                    original,
+                    kind,
+                    seed=seed + record_index * 1009 + augmentation_index,
+                )
+                feature_rows.append(extract_features(augmented))
+        features = np.vstack(feature_rows)
     except ValueError as exc:
         raise DatasetError("training feature extraction failed") from exc
-    labels = np.asarray([record.label for record in train], dtype=np.int64)
+    labels = np.asarray(
+        [record.label for record in train]
+        + [record.label for record in train for _ in selected_augmentations],
+        dtype=np.int64,
+    )
     model = LogisticRegressionModel.fit(features, labels)
     provenance = [record.provenance() for record in records]
     manifest_hash = records[0].manifest_sha256
@@ -438,6 +458,10 @@ def train_dataset(
             "seed": seed, "test_size": test_size, "group_by": group_by,
             "grouping": grouping, "split": split,
             "optimizer": {"epochs": 1000, "learning_rate": 0.1, "l2": 1e-3},
+            "augmentation": augmentation_metadata(
+                selected_augmentations,
+                seed=seed,
+            ),
         },
     }
     return model, train, test
@@ -450,13 +474,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--test-size", type=float, default=0.2)
     parser.add_argument("--group-by", choices=sorted(GROUPING_VERSIONS), default="content")
+    parser.add_argument(
+        "--augment",
+        action="append",
+        choices=sorted(AUGMENTATION_NAMES),
+        help="apply this deterministic augmentation to training rows only; repeat for multiple methods",
+    )
     parser.add_argument("--overwrite", action="store_true", help="explicitly replace the model output")
     args = parser.parse_args(argv)
     if Path(args.output).exists() and not args.overwrite:
         parser.error("model output already exists; use --overwrite explicitly")
     try:
         model, train, test = train_dataset(
-            args.dataset, seed=args.seed, test_size=args.test_size, group_by=args.group_by,
+            args.dataset,
+            seed=args.seed,
+            test_size=args.test_size,
+            group_by=args.group_by,
+            augmentations=args.augment,
         )
         save_model(model, args.output, overwrite=args.overwrite)
     except (DatasetError, OSError, ValueError) as exc:

@@ -31,7 +31,7 @@ export const apiService = {
   verifySession: () => api.get("/auth/me"),
   listScans: () => api.get("/scans"),
   getScan: (id) => api.get(`/scans/${encodeURIComponent(id)}`),
-  uploadScan: (file, transcript = "", transcriptConsent = false, retainAudio = false) => {
+  uploadScan: (file, transcript = "", transcriptConsent = false, retainAudio = false, transcriptLanguage = "auto", transcribeAudio = false) => {
     // Keep the service tolerant of an options object while the public call
     // remains backward-compatible with uploadScan(file).
     if (transcript && typeof transcript === "object") {
@@ -39,16 +39,22 @@ export const apiService = {
       transcriptConsent = options.transcriptConsent ?? options.transcript_consent ?? false;
       retainAudio = options.retainAudio ?? options.retain_audio ?? false;
       transcript = options.transcript || "";
+      transcriptLanguage = options.transcriptLanguage ?? options.transcript_language ?? "auto";
+      transcribeAudio = options.transcribeAudio ?? options.transcribe_audio ?? false;
     } else if (transcriptConsent && typeof transcriptConsent === "object") {
       const options = transcriptConsent;
       transcriptConsent = options.transcriptConsent ?? options.transcript_consent ?? false;
       retainAudio = options.retainAudio ?? options.retain_audio ?? retainAudio;
+      transcriptLanguage = options.transcriptLanguage ?? options.transcript_language ?? transcriptLanguage;
+      transcribeAudio = options.transcribeAudio ?? options.transcribe_audio ?? transcribeAudio;
     }
     const body = new FormData();
     body.append("audio", file);
     body.append("consent", "true");
     body.append("transcript", transcript || "");
     body.append("transcript_consent", transcriptConsent ? "true" : "false");
+    body.append("transcript_language", transcriptLanguage || "auto");
+    body.append("transcribe_audio", transcribeAudio ? "true" : "false");
     body.append("retain_audio", retainAudio ? "true" : "false");
     return api.post("/scans", body);
   },

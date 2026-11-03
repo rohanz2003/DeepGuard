@@ -31,6 +31,8 @@ export default function UploadPanel({ onUploaded, onPreviewDiscard, readOnly = f
   const [retainAudio, setRetainAudio] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [transcriptConsent, setTranscriptConsent] = useState(false);
+  const [transcribeAudio, setTranscribeAudio] = useState(false);
+  const [transcriptLanguage, setTranscriptLanguage] = useState("auto");
   const [state, setState] = useState({ loading: false, error: "", message: "" });
   const hasTranscript = transcript.trim().length > 0;
   const transcriptTooLong = transcript.length > MAX_TRANSCRIPT_CHARS;
@@ -93,7 +95,16 @@ export default function UploadPanel({ onUploaded, onPreviewDiscard, readOnly = f
     setState({ loading: true, error: "", message: "Uploading recording…" });
     try {
       const uploadedPreview = previewUrl ? { file, url: previewUrl } : null;
-      const { data } = await apiService.uploadScan(file, transcript, hasTranscript && transcriptConsent, retainAudio);
+      const uploadRequest = transcribeAudio || transcriptLanguage !== "auto"
+        ? apiService.uploadScan(file, {
+          transcript,
+          transcriptConsent: hasTranscript && transcriptConsent,
+          retainAudio,
+          transcriptLanguage,
+          transcribeAudio,
+        })
+        : apiService.uploadScan(file, transcript, hasTranscript && transcriptConsent, retainAudio);
+      const { data } = await uploadRequest;
       // Transfer the browser-only object URL to the current result before
       // clearing this form's local reference. It never enters scan metadata.
       if (uploadedPreview) previewTransferredRef.current = true;
@@ -107,6 +118,8 @@ export default function UploadPanel({ onUploaded, onPreviewDiscard, readOnly = f
       setRetainAudio(false);
       setTranscript("");
       setTranscriptConsent(false);
+      setTranscribeAudio(false);
+      setTranscriptLanguage("auto");
       if (inputRef.current) inputRef.current.value = "";
       setState({ loading: false, error: "", message: uploadStatusMessage(data.scan?.status) });
     } catch (error) {
@@ -124,9 +137,14 @@ export default function UploadPanel({ onUploaded, onPreviewDiscard, readOnly = f
      </div>
       {previewUrl && <div className="audio-preview"><div className="audio-preview-heading"><span><Icon name="waveform" size={15} /> Browser-only preview</span><small>Nothing is uploaded by previewing</small></div><audio controls preload="metadata" src={previewUrl} aria-label="Audio recording preview" /></div>}
      {!readOnly && <>
-      <div className="transcript-field">
+       <div className="transcript-field">
         <div className="transcript-field-heading"><label className="transcript-label" htmlFor="transcript-input">Transcript <span>(optional)</span></label><span className={`transcript-counter ${transcriptTooLong ? "over-limit" : ""}`} id="transcript-counter" aria-live="polite">{transcript.length} / {MAX_TRANSCRIPT_CHARS} characters</span></div>
         <textarea id="transcript-input" className="transcript-input" rows="5" maxLength={MAX_TRANSCRIPT_CHARS} value={transcript} onChange={updateTranscript} placeholder="Paste the spoken words to check for scam-language signals." aria-invalid={transcriptTooLong} aria-describedby={transcriptTooLong ? "transcript-counter transcript-error" : "transcript-counter"} />
+        <div className="transcript-options">
+          <label className="consent-row transcript-consent-row" htmlFor="transcribe-audio"><input id="transcribe-audio" type="checkbox" checked={transcribeAudio} onChange={(event) => setTranscribeAudio(event.target.checked)} /> <span>Generate a transcript locally for scam-language review</span></label>
+          {(hasTranscript || transcribeAudio) && <label className="language-select" htmlFor="transcript-language">Language<select id="transcript-language" value={transcriptLanguage} onChange={(event) => setTranscriptLanguage(event.target.value)}><option value="auto">Detect automatically</option><option value="en">English</option><option value="hi">Hindi</option><option value="es">Spanish</option></select></label>}
+          {transcribeAudio && <p className="retention-copy">Speech-to-text is optional and local-only when the server has a configured model. Transcript text is analyzed in memory and is not stored.</p>}
+        </div>
         {transcriptTooLong && <p className="inline-error transcript-error" id="transcript-error" role="alert"><Icon name="alert" size={15} />{TRANSCRIPT_LENGTH_ERROR}</p>}
         {hasTranscript && <label className="consent-row transcript-consent-row" htmlFor="transcript-consent"><input id="transcript-consent" type="checkbox" required aria-required="true" checked={transcriptConsent} onChange={(event) => setTranscriptConsent(event.target.checked)} /> <span>I have consent to analyze this transcript for scam-language signals.</span></label>}
        </div>

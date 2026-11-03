@@ -25,11 +25,11 @@ context and must be mounted or supplied by the runtime. The image defaults to
 `ENVIRONMENT=production` and an empty allowlist for `CORS_ORIGINS`, so a
 deployment must explicitly provide its public frontend origin.
 
-Scan inference is currently a bounded in-process worker. Each Gunicorn process
-has its own manager, and queued in-memory audio is lost if that process exits.
-This lifecycle is suitable for the current bounded MVP, but a durable shared
-queue and retry store are required before relying on processing across restarts
-or multiple independently scaled instances.
+The development default is a bounded in-process worker. Production should set
+`QUEUE_BACKEND=redis` and run the dedicated `python -m app.queue_worker`
+process. Redis stores queue messages and private GridFS pointers, uses a
+processing list for crash recovery, and exposes dead-letter depth through
+`/api/health`. Do not use the local queue with multiple Gunicorn workers.
 
 ## Backend process and container
 
@@ -46,6 +46,17 @@ worker and timeout defaults can be adjusted without changing application code:
 | `GUNICORN_GRACEFUL_TIMEOUT` | `30` | Graceful shutdown window |
 | `GUNICORN_KEEPALIVE` | `5` | Keep-alive seconds |
 | `GUNICORN_LOG_LEVEL` | `info` | Gunicorn log level |
+
+Durable queue and shared rate-limit settings:
+
+| Variable | Example | Purpose |
+| --- | --- | --- |
+| `QUEUE_BACKEND` | `redis` | Select the durable Redis queue |
+| `QUEUE_REDIS_URL` | `redis://redis.internal:6379/0` | Queue connection |
+| `REDIS_URL` | `redis://redis.internal:6379/0` | Shared rate-limit connection |
+| `QUEUE_NAME` | `deepguard-scans` | Ready queue name |
+| `QUEUE_RETRY_BACKOFF_SECONDS` | `2` | Exponential retry base |
+| `RATE_LIMIT_BACKEND` | `redis` | Shared rate limiting |
 
 Build and run the portable image from the repository root:
 
@@ -119,6 +130,11 @@ CORS_ORIGINS=https://frontend.example.test
 MONGODB_URI=mongodb+srv://user:password@example.mongodb.net/?retryWrites=true
 MONGODB_DATABASE=deepguard
 MONGODB_GRIDFS_BUCKET=audio
+QUEUE_BACKEND=redis
+QUEUE_REDIS_URL=redis://redis.internal:6379/0
+REDIS_URL=redis://redis.internal:6379/0
+RATE_LIMIT_BACKEND=redis
+QUEUE_NAME=deepguard-scans
 ```
 
 Keep `FIREBASE_AUTH_EMULATOR_HOST` and `FIRESTORE_EMULATOR_HOST` unset in
@@ -129,8 +145,10 @@ existing validation bounds still apply. If the runtime provides an
 appropriate application identity, `GOOGLE_APPLICATION_CREDENTIALS` may be
 left empty and Application Default Credentials can be used instead.
 
-MongoDB is an optional audio-retention dependency. Keep `MONGODB_URI` empty
-when retained audio is not needed; ordinary uploads do not connect to MongoDB.
+MongoDB is optional for the local in-process queue when retained playback is
+not needed. With `QUEUE_BACKEND=redis`, MongoDB GridFS is required even when
+`retain_audio=false`: the API stores temporary normalized audio there and puts
+only a private pointer in Redis so the separate worker can process it.
 When `retain_audio=true` is admitted, the backend stores bytes in the named
 GridFS bucket and stores only a pointer plus retention metadata in Firestore.
 Use a secret-management facility for the URI and grant the application only
@@ -184,6 +202,23 @@ development origin in production. Keep the API URL and each CORS origin on
 HTTPS. If the frontend and API share one public origin, `/api` can be used as
 `VITE_API_URL` and the single origin should still be configured explicitly.
 
+## Retention and monitoring schedules
+
+Configure a Firestore TTL policy in the Google Cloud console or with the
+Firestore CLI for collection group `scans`, field `expires_at`. TTL is the
+eventual cleanup mechanism for metadata; the API still enforces expiry on reads.
+
+Schedule the retained-audio cleanup command at least daily:
+
+```sh
+python -m app.maintenance --cleanup-gridfs --limit 1000
+```
+
+Alert on `/api/health` returning unavailable Firebase, model, or queue status;
+queue/dead-letter depth; inference latency from `/api/metrics`; upload 4xx/5xx
+rates; and retained-audio cleanup failures. Keep application logs structured
+and exclude audio, transcript text, credentials, and provider error details.
+
 ## HTTPS and smoke checks
 
 Terminate TLS at the public edge for both services, redirect plaintext HTTP to
@@ -203,3 +238,125 @@ The backend health response should report Firebase/Firestore readiness before
 protected scan routes are considered ready. The frontend check should return
 the static application shell over HTTPS, and a browser sign-in/upload smoke
 check should use the same HTTPS origin configured in `CORS_ORIGINS`.
+
+## Render backend and Vercel frontend
+
+The following settings deploy this repository without moving the backend or
+frontend directories. Create the backend services from the repository root so
+the backend can import the sibling `ai_models/` package.
+
+### 1. Deploy the backend web service on Render
+
+Create a Render **Web Service** connected to this repository:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | repository root (`.`) |
+| Runtime | Python |
+| Build Command | `pip install -r backend/requirements.txt` |
+| Start Command | `gunicorn --chdir backend --config backend/gunicorn.conf.py run:app` |
+| Health Check Path | `/api/health` |
+
+Create a Render Redis-compatible **Key Value** instance and set its internal
+connection URL in the web service as both `QUEUE_REDIS_URL` and `REDIS_URL`.
+Then set these production variables:
+
+```dotenv
+ENVIRONMENT=production
+FIREBASE_PROJECT_ID=your-firebase-project-id
+USE_FIREBASE_EMULATORS=false
+CORS_ORIGINS=https://your-app.vercel.app
+QUEUE_BACKEND=redis
+# Copy the complete internal URL supplied by Render, including its scheme.
+QUEUE_REDIS_URL=<full-render-redis-internal-url>
+REDIS_URL=<full-render-redis-internal-url>
+RATE_LIMIT_BACKEND=redis
+QUEUE_NAME=deepguard-scans
+```
+
+Upload the Firebase Admin service-account JSON through Render's **Secret
+Files**, not an ordinary environment variable, and set:
+
+```dotenv
+GOOGLE_APPLICATION_CREDENTIALS=/etc/secrets/firebase-service-account.json
+```
+
+For the recommended Redis deployment, set `MONGODB_URI`,
+`MONGODB_DATABASE=deepguard`, and `MONGODB_GRIDFS_BUCKET=audio` even if
+playback retention is disabled. Leave `MONGODB_URI` empty only when using the
+local queue and no retained playback.
+
+The model artifact is not committed to this repository. Upload the reviewed
+artifact as a Render Secret File and set, for example:
+
+```dotenv
+MODEL_ARTIFACT_PATH=/etc/secrets/baseline.json
+MODEL_POLICY_PATH=/etc/secrets/baseline-policy.json
+```
+
+Do not set `MODEL_POLICY_PATH` until an independently audited,
+speaker/generator-disjoint calibration policy has been reviewed. Without a
+model artifact, the API still starts but scans return an unavailable or
+inconclusive model result.
+
+### 2. Deploy the durable worker on Render
+
+Create a separate Render **Background Worker** using the same repository,
+build command, environment variables, Redis instance, and Secret Files as the
+web service:
+
+```text
+Build Command: pip install -r backend/requirements.txt
+Start Command: cd backend && python -m app.queue_worker
+```
+
+The worker is required when `QUEUE_BACKEND=redis`; otherwise accepted uploads
+remain `pending`. Set `QUEUE_BACKEND=local` only for a single-process
+development-style deployment and omit the worker.
+
+### 3. Deploy the frontend on Vercel
+
+Import the same repository as a Vercel project and set:
+
+| Setting | Value |
+| --- | --- |
+| Root Directory | `frontend` |
+| Framework Preset | Vite |
+| Build Command | `npm run build` |
+| Output Directory | `dist` |
+
+The committed `frontend/vercel.json` keeps React Router routes such as
+`/settings` and `/preview` working after a direct page load. Add these Vercel
+**build-time** environment variables for Production (and Preview if preview
+deployments should use the API):
+
+```dotenv
+VITE_API_URL=https://your-backend.onrender.com/api
+VITE_FIREBASE_API_KEY=your-firebase-web-api-key
+VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
+VITE_FIREBASE_PROJECT_ID=your-firebase-project-id
+VITE_FIREBASE_APP_ID=your-firebase-web-app-id
+VITE_USE_FIREBASE_EMULATORS=false
+```
+
+`VITE_*` values are embedded during the Vercel build. Redeploy after changing
+them. They may contain Firebase's public web configuration, but never put the
+Firebase Admin JSON, MongoDB URI, Redis URL, or any private key in Vercel.
+
+After the first Vercel deployment, replace `CORS_ORIGINS` on both Render
+services with the exact Vercel origin, add that origin to Firebase
+Authentication's authorized domains, and redeploy the frontend if its API URL
+changed.
+
+### 4. Verify the split deployment
+
+```sh
+curl --fail --silent --show-error https://your-backend.onrender.com/api/health
+curl --fail --silent --show-error --head https://your-app.vercel.app/
+curl --fail --silent --show-error https://your-app.vercel.app/preview
+```
+
+The Render health response should show `queue.status: "ready"` and the model
+worker should be running before testing an authenticated upload. In the
+browser, verify sign-in, upload, scan completion, playback only when retention
+was enabled, deletion, and owner isolation.

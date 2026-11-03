@@ -91,4 +91,24 @@ describe("UploadPanel browser preview and retention controls", () => {
 
     await waitFor(() => expect(upload).toHaveBeenCalledWith(file, "", false, false));
   });
+
+  it("requires an explicit local transcription choice and sends its language", async () => {
+    const upload = vi.spyOn(apiService, "uploadScan").mockResolvedValue({ data: { scan: { id: "local-transcript", status: "pending" } } });
+    render(<UploadPanel onUploaded={vi.fn()} />);
+    const file = new File(["RIFF"], "voice.wav", { type: "audio/wav" });
+
+    fireEvent.change(screen.getByLabelText("WAV or MP3 audio file"), { target: { files: [file] } });
+    fireEvent.click(screen.getByLabelText("Generate a transcript locally for scam-language review"));
+    fireEvent.change(screen.getByLabelText("Language"), { target: { value: "hi" } });
+    fireEvent.click(screen.getByLabelText(/consent to submit this recording/i));
+    fireEvent.click(screen.getByRole("button", { name: /start review/i }));
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(file, {
+      transcript: "",
+      transcriptConsent: false,
+      retainAudio: false,
+      transcriptLanguage: "hi",
+      transcribeAudio: true,
+    }));
+  });
 });
