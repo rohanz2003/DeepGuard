@@ -5,7 +5,6 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import SetupPage from "./components/SetupPage";
 import WorkspaceLayout from "./components/WorkspaceLayout";
 import NotFoundPage from "./pages/NotFoundPage";
-import LandingPage from "./pages/LandingPage";
 import { clearLegacyCredentials, isFirebaseConfigured } from "./config";
 import { useAuth } from "./hooks/useAuth";
 
@@ -19,5 +18,5 @@ export default function App() {
 export function AuthenticatedApp({ auth }) {
   if (auth.checking) return <div className="app-loading" role="status"><div className="loader" /><span>{auth.user ? "Verifying secure workspace" : "Loading secure workspace"}</span></div>;
   if (auth.errorKind === "server") return <main className="app-loading" role="alert"><h1>Workspace verification unavailable</h1><p>{auth.error}</p><button className="button primary" onClick={() => window.location.reload()}>Retry verification</button></main>;
-  return <Routes><Route path="/" element={<LandingPage />} /><Route path="/login" element={auth.user ? <Navigate to="/" replace /> : <AuthPage authenticate={auth.authenticate} initialError={auth.errorKind === "auth" ? auth.error : ""} />} /><Route path="/*" element={auth.verifiedUser ? <WorkspaceLayout user={auth.verifiedUser} onSignOut={auth.logout} /> : <Navigate to="/login" replace />} /><Route path="*" element={<NotFoundPage />} /></Routes>;
+  return <Routes><Route path="/login" element={auth.user ? <Navigate to="/" replace /> : <AuthPage authenticate={auth.authenticate} initialError={auth.errorKind === "auth" ? auth.error : ""} />} /><Route path="/*" element={auth.verifiedUser ? <WorkspaceLayout user={auth.verifiedUser} onSignOut={auth.logout} /> : <Navigate to="/login" replace />} /><Route path="*" element={<NotFoundPage />} /></Routes>;
 }
