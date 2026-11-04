@@ -56,7 +56,7 @@
 
 * { box-sizing: border-box; }
 html { min-width: 320px; scroll-behavior: smooth; }
-body { margin: 0; min-width: 320px; background: var(--bg); color: var(--ink); line-height: 1.5; }
+body { margin: 0; min-width: 320px; background: var(--bg); color: var(--ink); line-height: 1.5; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.62; }
@@ -71,7 +71,13 @@ h2 { letter-spacing: -0.035em; }
 .loader { width: 24px; height: 24px; border: 2px solid var(--line-strong); border-top-color: var(--blue-bright); border-radius: 50%; animation: spin .8s linear infinite; }
 .button-spinner { width: 14px; height: 14px; display: inline-block; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .75s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fade-up { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes scale-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* Focus visible for accessibility */
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--blue-bright) 35%, transparent); outline-offset: 3px; }
 
 .button { min-height: 44px; padding: 0 17px; border: 1px solid transparent; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; font-weight: 700; font-size: 13px; transition: transform .2s ease, box-shadow .2s ease, background .2s ease, border-color .2s ease; }
 .button:hover:not(:disabled) { transform: translateY(-1px); }
