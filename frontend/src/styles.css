@@ -466,14 +466,14 @@ h2 { letter-spacing: -0.035em; }
   .landing-container { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 clamp(20px, 4vw, 60px); }
 
   /* Header */
-  .landing-header { position: sticky; top: 0; z-index: 50; height: 72px; display: flex; align-items: center; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(8px); }
-  .landing-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--navy); font-family: 'Space Grotesk', sans-serif; font-size: 18px; font-weight: 700; letter-spacing: -.05em; }
-  .landing-brand-mark { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: #fff; border-radius: 11px; background: linear-gradient(135deg, #183f79, #327ae1); box-shadow: 0 7px 14px rgba(28, 91, 184, .22); }
+  .landing-header { position: sticky; top: 0; z-index: 50; height: 64px; display: flex; align-items: center; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 95%, transparent); backdrop-filter: blur(12px); }
+  .landing-brand { display: inline-flex; align-items: center; gap: 9px; color: var(--navy); font-family: 'Space Grotesk', sans-serif; font-size: 17px; font-weight: 700; letter-spacing: -.04em; }
+  .landing-brand-mark { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; color: #fff; border-radius: 9px; background: linear-gradient(135deg, #183f79, #327ae1); box-shadow: 0 5px 12px rgba(28, 91, 184, .2); }
   .landing-brand-name span { color: var(--blue); }
-  .landing-nav { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-  .landing-nav-link { color: var(--ink-soft); font-size: 13px; font-weight: 600; transition: color .2s ease; }
-  .landing-nav-link:hover { color: var(--blue); }
-  .landing-cta { min-height: 40px; padding: 0 18px; font-size: 13px; }
+  .landing-nav { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .landing-nav-link { color: var(--ink-soft); font-size: 12px; font-weight: 600; transition: color .2s ease; padding: 6px 10px; border-radius: 6px; }
+  .landing-nav-link:hover { color: var(--blue); background: var(--surface-tint); }
+  .landing-cta { min-height: 36px; padding: 0 16px; font-size: 12px; }
 
   /* Hero */
   .hero { padding: clamp(60px, 10vw, 120px) 0; display: grid; grid-template-columns: 1.1fr .9fr; gap: clamp(40px, 8vw, 80px); align-items: center; }
