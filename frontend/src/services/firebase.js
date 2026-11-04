@@ -1,5 +1,5 @@
 import { getApp, getApps, initializeApp } from "firebase/app";
-import { getAuth, connectAuthEmulator, inMemoryPersistence, setPersistence } from "firebase/auth";
+import { getAuth, connectAuthEmulator, browserLocalPersistence, setPersistence } from "firebase/auth";
 import { firebaseAuthEmulatorUrl, firebaseConfig, isFirebaseConfigured, useFirebaseEmulators } from "../config";
 
 let authClient;
@@ -18,6 +18,6 @@ export function getFirebaseAuth() {
 
 export async function prepareFirebaseAuth() {
   const auth = getFirebaseAuth();
-  if (auth) await setPersistence(auth, inMemoryPersistence);
+  if (auth) await setPersistence(auth, browserLocalPersistence);
   return auth;
 }

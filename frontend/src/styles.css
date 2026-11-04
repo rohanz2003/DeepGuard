@@ -354,7 +354,22 @@ h2 { letter-spacing: -0.035em; }
 .auth-form input::placeholder { color: #a7b2c1; }
 .auth-form input:focus { border-color: var(--blue-bright); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue-bright) 13%, transparent); }
 .auth-form .form-error { margin-top: -1px; }
-.auth-switch { margin-top: 22px; display: flex; justify-content: center; gap: 5px; color: var(--muted); font-size: 11px; }
+.auth-form .form-success { margin-top: -1px; color: var(--green); }
+.auth-form .form-success svg { color: var(--green); }
+
+.password-field { position: relative; }
+.password-input-wrapper { position: relative; display: flex; align-items: center; }
+.password-input-wrapper input { width: 100%; padding-right: 48px; }
+.password-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--muted); border-radius: 7px; transition: all .2s ease; }
+.password-toggle:hover { background: var(--surface-soft); color: var(--ink-soft); }
+.password-toggle:focus-visible { outline: 3px solid color-mix(in srgb, var(--blue-bright) 35%, transparent); outline-offset: 2px; }
+
+.forgot-inline { display: block; margin-top: 6px; padding: 0; border: 0; background: transparent; color: var(--blue); font-size: 11px; font-weight: 600; text-align: right; cursor: pointer; }
+.forgot-inline:hover { color: var(--blue-bright); text-decoration: underline; }
+
+.auth-switch { margin-top: 18px; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; color: var(--muted); font-size: 11px; }
+.auth-switch .forgot-link { color: var(--blue); font-weight: 600; }
+.auth-switch .forgot-link:hover { color: var(--blue-bright); text-decoration: underline; }
 .auth-disclaimer { margin: 35px 0 0; display: flex; align-items: flex-start; gap: 6px; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .auth-disclaimer svg { flex: 0 0 auto; margin-top: 1px; }
 .setup-shell .auth-visual h1 { margin-top: 25px; }
