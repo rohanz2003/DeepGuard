@@ -125,14 +125,14 @@ h2 { letter-spacing: -0.035em; }
 .privacy-note small { margin-top: 2px; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .sign-out { width: 100%; color: var(--muted); background: transparent; }
 .sidebar-collapsed .sidebar { width: 76px; flex-basis: 76px; padding-left: 12px; padding-right: 12px; }
-.sidebar-collapsed .sidebar-top { justify-content: center; padding: 0; }
-.sidebar-collapsed .brand { gap: 0; justify-content: center; width: 100%; }
+.sidebar-collapsed .sidebar-top { justify-content: space-between; padding: 0 4px; }
+.sidebar-collapsed .brand { gap: 0; justify-content: flex-start; }
 .sidebar-collapsed .brand-name, .sidebar-collapsed .workspace-chip span:last-child, .sidebar-collapsed .nav-label, .sidebar-collapsed .nav-item > span:not(.planned-dot), .sidebar-collapsed .privacy-note span { display: none; }
 .sidebar-collapsed .workspace-chip { justify-content: center; padding: 9px 0; }
 .sidebar-collapsed .nav-item { justify-content: center; padding: 0; }
 .sidebar-collapsed .planned-dot { position: absolute; width: 5px; height: 5px; padding: 0; margin: 0 0 25px 22px; border-radius: 50%; overflow: hidden; }
 .sidebar-collapsed .privacy-note { justify-content: center; padding: 0; }
-.sidebar-collapsed .collapse-button { transform: rotate(180deg); margin-left: auto; }
+.sidebar-collapsed .collapse-button { transform: rotate(180deg); }
 
 .main-content { min-width: 0; flex: 1; }
 .topbar { height: 78px; padding: 0 clamp(22px, 4vw, 54px); display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--surface) 87%, transparent); }
